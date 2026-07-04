@@ -4,6 +4,7 @@
 #include "vga.h"
 #include "io.h"
 #include "paging.h"
+#include "bios.h"
 #include <stdint.h>
 
 /* ---- register bank offsets (mode 13h / text) ------------------------------ */
@@ -34,7 +35,8 @@
 #define VBE_LFB        0x40
 
 /* ---- state ---------------------------------------------------------------- */
-static int      g_mode;          /* 0 = mode 13h, 1 = VBE */
+static int      g_mode;          /* 0 = mode 13h, 1 = linear framebuffer */
+static int      g_kind;          /* 0 = mode 13h, 1 = Bochs dispi, 2 = BIOS VBE */
 static int      g_width, g_height, g_bpp;
 static uint32_t g_pitch;
 static uint8_t *g_fb;
@@ -179,6 +181,120 @@ static void map_range(uint32_t base, uint32_t size) {
             paging_map(a, a, PAGE_PRESENT | PAGE_WRITE);
 }
 
+/* ---- real VESA BIOS via the real-mode thunk (works on real hardware) ------ */
+#define VBE_INFO 0x8000u        /* low scratch the BIOS can write to */
+#define VBE_MODE 0x8200u
+#define VBE_EDID 0x8400u
+
+static void pic_mask_all(uint8_t *m1, uint8_t *m2) {
+    *m1 = inb(0x21); *m2 = inb(0xA1);
+    outb(0x21, 0xFF); outb(0xA1, 0xFF);   /* BIOS may sti; PIC is remapped */
+}
+static void pic_unmask(uint8_t m1, uint8_t m2) {
+    outb(0x21, m1); outb(0xA1, m2);
+}
+
+static uint16_t rd16b(volatile uint8_t *p, int off) {
+    return (uint16_t)(p[off] | (p[off + 1] << 8));
+}
+static void clear_regs(regs16_t *r) {
+    r->di = r->si = r->bp = r->sp = r->bx = r->dx = r->cx = r->ax = 0;
+    r->gs = r->fs = r->es = r->ds = r->flags = 0;
+}
+
+static int bios_vbe_setup(void) {
+    volatile uint8_t *info = phys_ptr(VBE_INFO);
+    volatile uint8_t *mi   = phys_ptr(VBE_MODE);
+    regs16_t r;
+    uint8_t sm1, sm2;
+
+    pic_mask_all(&sm1, &sm2);
+
+    /* 4F00: controller info (request VBE 2.0+ with the 'VBE2' tag). */
+    for (int i = 0; i < 512; i++) info[i] = 0;
+    info[0] = 'V'; info[1] = 'B'; info[2] = 'E'; info[3] = '2';
+    clear_regs(&r);
+    r.ax = 0x4F00; r.di = VBE_INFO;
+    bios_int(0x10, &r);
+    if (r.ax != 0x004F ||
+        !(info[0] == 'V' && info[1] == 'E' && info[2] == 'S' && info[3] == 'A')) {
+        pic_unmask(sm1, sm2);
+        return -1;
+    }
+
+    uint32_t list_lin = ((uint32_t)rd16b(info, 16) << 4) + rd16b(info, 14);
+    volatile uint16_t *modes = (volatile uint16_t *)phys_ptr(list_lin);
+
+    /* Best-effort: read the monitor's preferred (native) resolution from EDID. */
+    int want_w = 0, want_h = 0;
+    clear_regs(&r);
+    r.ax = 0x4F15; r.bx = 0x0001; r.di = VBE_EDID;
+    bios_int(0x10, &r);
+    if (r.ax == 0x004F) {
+        volatile uint8_t *e = phys_ptr(VBE_EDID);     /* detailed timing @ 54 */
+        int hw = e[56] | ((e[58] & 0xF0) << 4);
+        int hh = e[59] | ((e[61] & 0xF0) << 4);
+        if (hw >= 320 && hw <= 4096 && hh >= 200 && hh <= 4096) {
+            want_w = hw; want_h = hh;
+        }
+    }
+
+    /* Scan the mode list for the best 32-bpp linear-framebuffer mode. */
+    int best_w = 0, best_h = 0;
+    uint16_t best_mode = 0xFFFF, best_pitch = 0;
+    uint32_t best_lfb = 0;
+    for (int i = 0; i < 400 && modes[i] != 0xFFFF; i++) {
+        uint16_t m = modes[i];
+        clear_regs(&r);
+        r.ax = 0x4F01; r.cx = m; r.di = VBE_MODE;
+        bios_int(0x10, &r);
+        if (r.ax != 0x004F) continue;
+        uint16_t attr = rd16b(mi, 0);
+        if ((attr & 0x91) != 0x91) continue;          /* supported+graphics+LFB */
+        if (mi[25] != 32) continue;                   /* 32 bpp */
+        int w = rd16b(mi, 18), h = rd16b(mi, 20);
+        uint16_t pitch = rd16b(mi, 50);
+        if (pitch == 0) pitch = rd16b(mi, 16);
+        uint32_t lfb = (uint32_t)rd16b(mi, 40) | ((uint32_t)rd16b(mi, 42) << 16);
+        if (lfb == 0) continue;
+
+        int take = 0;
+        if (want_w) {
+            if (w == want_w && h == want_h) {
+                best_w = w; best_h = h; best_mode = m;
+                best_pitch = pitch; best_lfb = lfb;
+                break;                                /* exact native match */
+            }
+            if (w <= want_w && h <= want_h && w * h > best_w * best_h) take = 1;
+        } else if (w <= 1280 && h <= 1024 && w * h > best_w * best_h) {
+            take = 1;
+        }
+        if (take) {
+            best_w = w; best_h = h; best_mode = m;
+            best_pitch = pitch; best_lfb = lfb;
+        }
+    }
+    if (best_mode == 0xFFFF) { pic_unmask(sm1, sm2); return -1; }
+
+    /* 4F02: set the chosen mode with the linear-framebuffer bit (0x4000). */
+    clear_regs(&r);
+    r.ax = 0x4F02; r.bx = (uint16_t)(best_mode | 0x4000);
+    bios_int(0x10, &r);
+    pic_unmask(sm1, sm2);
+    if (r.ax != 0x004F) return -1;
+
+    g_kind   = 2;
+    g_mode   = 1;
+    g_width  = best_w;
+    g_height = best_h;
+    g_bpp    = 32;
+    g_pitch  = best_pitch;
+    map_range(best_lfb, (uint32_t)best_pitch * best_h);
+    g_fb = (uint8_t *)phys_ptr(best_lfb);
+    return 0;
+}
+
+/* ---- Bochs/QEMU dispi (VMs without a usable VESA BIOS path) ---------------- */
 /* Try to bring up a high-resolution 32-bpp VBE mode. Returns 0 on success. */
 static int vbe_setup(void) {
     uint16_t id = vbe_read(VBE_I_ID);
@@ -211,6 +327,7 @@ static int vbe_setup(void) {
     vbe_write(VBE_I_BPP, 32);
     vbe_write(VBE_I_ENABLE, VBE_ENABLED | VBE_LFB);
 
+    g_kind   = 1;
     g_mode   = 1;
     g_width  = w;
     g_height = h;
@@ -228,20 +345,35 @@ static int vbe_setup(void) {
 void vga_enter_graphics(void) {
     save_font();                     /* must happen while still in text mode */
 
-    if (vbe_setup() != 0) {
-        write_regs(mode_13h);
-        g_mode   = 0;
-        g_width  = 320;
-        g_height = 200;
-        g_bpp    = 8;
-        g_pitch  = 320;
-        g_fb     = (uint8_t *)phys_ptr(0xA0000);
-    }
+    /* Prefer the real VESA BIOS (universal, incl. real hardware), then the
+     * Bochs/QEMU dispi ports, then plain VGA mode 13h. */
+    if (bios_vbe_setup() == 0)
+        return;
+    if (vbe_setup() == 0)
+        return;
+
+    write_regs(mode_13h);
+    g_kind   = 0;
+    g_mode   = 0;
+    g_width  = 320;
+    g_height = 200;
+    g_bpp    = 8;
+    g_pitch  = 320;
+    g_fb     = (uint8_t *)phys_ptr(0xA0000);
 }
 
 void vga_leave_graphics(void) {
-    if (g_mode == 1)
-        vbe_write(VBE_I_ENABLE, 0);  /* disable VBE, back to VGA compatibility */
+    if (g_kind == 2) {
+        uint8_t sm1, sm2;
+        regs16_t r;
+        pic_mask_all(&sm1, &sm2);
+        clear_regs(&r);
+        r.ax = 0x0003;               /* BIOS: set 80x25 text mode (reloads font) */
+        bios_int(0x10, &r);
+        pic_unmask(sm1, sm2);
+    } else if (g_kind == 1) {
+        vbe_write(VBE_I_ENABLE, 0);  /* disable dispi, back to VGA compatibility */
+    }
 
     write_regs(mode_03h);
     restore_font();

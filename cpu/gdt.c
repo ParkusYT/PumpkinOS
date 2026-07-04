@@ -34,7 +34,7 @@ struct tss_entry {
     uint16_t trap, iomap_base;
 } __attribute__((packed));
 
-static struct gdt_entry gdt[6];
+static struct gdt_entry gdt[8];
 static struct gdt_ptr   gdtp;
 static struct tss_entry tss;
 
@@ -68,6 +68,11 @@ void gdt_init(void) {
     tss.esp0       = 0x90000;                     /* placeholder; updated per task */
     tss.iomap_base = sizeof(tss);                 /* no I/O permission bitmap */
     set_gdt(5, (uint32_t)&tss, sizeof(tss) - 1, 0x89, 0x00);
+
+    /* 16-bit code/data (base 0, 64 KiB, byte granularity, D bit clear). The
+     * real-mode BIOS thunk uses these to step down PM -> 16-bit PM -> real. */
+    set_gdt(6, 0, 0xFFFF, 0x9A, 0x00);            /* 16-bit code (0x30)      */
+    set_gdt(7, 0, 0xFFFF, 0x92, 0x00);            /* 16-bit data (0x38)      */
 
     /* Load the GDT, reload the segment registers, then load the TSS. */
     __asm__ volatile(
