@@ -26,6 +26,9 @@ void fs_pwd(void);                      /* pwd */
 
 /* Reading and writing. */
 int  fs_cat(const char *name);          /* cat; -1 if not found */
+/* Read a whole file into 'buf' (up to 'maxlen' bytes). Returns the number of
+ * bytes read, or -1 if the file does not exist / is a directory / won't fit. */
+int  fs_read(const char *name, uint8_t *buf, uint32_t maxlen);
 int  fs_create(const char *name, const char *data, uint32_t len);  /* write/touch */
 int  fs_mkdir(const char *name);        /* mkdir */
 int  fs_remove(const char *name);       /* rm (files only) */

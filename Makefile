@@ -63,6 +63,13 @@ HEADERS    := $(wildcard $(addsuffix /*.h,$(SRC_DIRS)))
 KERNEL_ELF := $(BUILD)/kernel.elf
 KERNEL_BIN := $(BUILD)/kernel.bin
 
+# A standalone ring-3 program, built to its own ELF (NOT part of the kernel)
+# and copied onto the floppy so the ELF loader can run it: `run HELLO.ELF`.
+UPROG_SRC  := userprog/hello.c
+UPROG_LD   := userprog/user.ld
+UPROG_OBJ  := $(BUILD)/hello.uo
+UPROG_ELF  := $(BUILD)/hello.elf
+
 # Extra files copied into the FAT12 filesystem (the kernel itself is also a
 # file, KERNEL.BIN, so it shows up in 'ls').
 FSROOT     := fsroot
@@ -93,6 +100,13 @@ $(BUILD)/%.o: %.c | $(BUILD)
 # this size; avoids stale builds while hacking on the kernel).
 $(C_OBJS): $(HEADERS)
 
+# ---- ring-3 program: compile and link into its own ELF ----------------------
+$(UPROG_OBJ): $(UPROG_SRC) | $(BUILD)
+	$(CC) $(CFLAGS) $< -o $@
+
+$(UPROG_ELF): $(UPROG_OBJ) $(UPROG_LD)
+	$(LD) -m elf_i386 -T $(UPROG_LD) -o $@ $(UPROG_OBJ)
+
 # ---- kernel: link (entry.o FIRST so _start lands at 0x1000) -----------------
 $(KERNEL_ELF): $(KERNEL_OBJS) linker.ld
 	$(LD) $(LDFLAGS) -o $@ $(KERNEL_OBJS)
@@ -112,10 +126,11 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 # file KERNEL.BIN (so 'ls' shows it) along with the fsroot/ files, then overlay
 # our own boot sector (its BPB matches the standard 1.44 MB layout mkfs.fat
 # used, so the volume stays consistent).
-$(IMG): $(BOOT_BIN) $(KERNEL_BIN) $(FS_FILES)
+$(IMG): $(BOOT_BIN) $(KERNEL_BIN) $(UPROG_ELF) $(FS_FILES)
 	dd if=/dev/zero of=$(IMG) bs=512 count=2880 status=none
 	mkfs.fat -F 12 -n PUMPKIN $(IMG) >/dev/null
 	MTOOLS_SKIP_CHECK=1 mcopy -i $(IMG) $(KERNEL_BIN) ::KERNEL.BIN
+	MTOOLS_SKIP_CHECK=1 mcopy -i $(IMG) $(UPROG_ELF) ::HELLO.ELF
 	@for f in $(FS_FILES); do \
 	    dest=$$(basename "$$f" | tr 'a-z' 'A-Z'); \
 	    MTOOLS_SKIP_CHECK=1 mcopy -i $(IMG) "$$f" "::$$dest"; \

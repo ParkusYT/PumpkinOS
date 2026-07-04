@@ -360,6 +360,41 @@ done:
     return 0;
 }
 
+/* ---- read a whole file into a buffer -------------------------------------- */
+int fs_read(const char *name, uint8_t *buf, uint32_t maxlen) {
+    if (!mounted) return -1;
+
+    uint8_t name83[11];
+    to_83(name, name83);
+    uint8_t ent[32];
+    if (!dir_find(cwd_cluster, name83, 0, 0, ent)) { floppy_motor_off(); return -1; }
+    if (ent[11] & ATTR_DIR) { floppy_motor_off(); return -1; }
+
+    uint16_t cluster = (uint16_t)(ent[26] | (ent[27] << 8));
+    uint32_t size = ent[28] | (ent[29] << 8) | (ent[30] << 16) |
+                    ((uint32_t)ent[31] << 24);
+    if (size > maxlen) { floppy_motor_off(); return -1; }
+
+    uint32_t remaining = size, got = 0;
+    uint8_t sec[512];
+    int guard = 0;
+    while (cluster >= 2 && cluster < EOC && remaining > 0 && guard++ < 8192) {
+        for (uint32_t s = 0; s < sectors_per_cluster && remaining > 0; s++) {
+            if (read_fs(cluster_lba(cluster) + s, 1, sec) != 0) {
+                floppy_motor_off();
+                return -1;
+            }
+            uint32_t n = remaining < 512 ? remaining : 512;
+            memcpy(buf + got, sec, n);
+            got += n;
+            remaining -= n;
+        }
+        cluster = fat_get(cluster);
+    }
+    floppy_motor_off();
+    return (int)got;
+}
+
 /* ---- create / touch ------------------------------------------------------- */
 int fs_create(const char *name, const char *data, uint32_t len) {
     if (!mounted) { console_write("no filesystem mounted\n"); return -1; }

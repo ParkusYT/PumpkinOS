@@ -18,6 +18,8 @@
 #include "fat12.h"
 #include "rtc.h"
 #include "ata.h"
+#include "acpi.h"
+#include "elf.h"
 #include "string.h"
 #include "io.h"
 
@@ -91,6 +93,8 @@ static void cmd_help(void) {
     console_write("  tasks         list scheduler tasks and their counters\n");
     console_write("  user          run a program in ring 3 via syscalls\n");
     console_write("  userfault     ring-3 task touches kernel memory (halts - demo)\n");
+    console_write("  run <f.elf>   load and run an ELF program from disk (ring 3)\n");
+    console_write("  poweroff      soft power-off via ACPI\n");
     console_write("  reboot        restart the machine\n");
     console_write("  halt          stop the CPU\n");
 }
@@ -542,6 +546,30 @@ static void cmd_write(char *args) {
     fs_create(args, buf, n);
 }
 
+/* run <file.elf> - load an ELF program off the disk and run it in ring 3. */
+static void cmd_run(const char *args) {
+    if (args[0] == '\0') { console_write("usage: run <program.elf>\n"); return; }
+    if (elf_exec(args) != 0) {
+        console_set_color(VGA_LIGHT_RED, VGA_BLACK);
+        console_write("run: not a runnable ELF program: ");
+        console_write(args);
+        console_putc('\n');
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    }
+}
+
+static void cmd_poweroff(void) {
+    console_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
+    console_write("Powering off via ACPI...\n");
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    acpi_poweroff();                    /* returns only if it failed */
+    console_set_color(VGA_YELLOW, VGA_BLACK);
+    console_write("ACPI power-off unavailable; halting instead.\n");
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    for (;;)
+        __asm__ volatile("cli; hlt");
+}
+
 static void cmd_reboot(void) {
     console_write("Rebooting...\n");
     /* Pulse the CPU reset line via the 8042 keyboard controller. */
@@ -645,6 +673,10 @@ static void shell_execute(char *line) {
         cmd_user();
     else if (strcmp(cmd, "userfault") == 0)
         cmd_userfault();
+    else if (strcmp(cmd, "run") == 0 || strcmp(cmd, "exec") == 0)
+        cmd_run(args);
+    else if (strcmp(cmd, "poweroff") == 0 || strcmp(cmd, "shutdown") == 0)
+        cmd_poweroff();
     else if (strcmp(cmd, "reboot") == 0)
         cmd_reboot();
     else if (strcmp(cmd, "halt") == 0)

@@ -17,6 +17,7 @@
 #include "keyboard.h"
 #include "floppy.h"
 #include "ata.h"
+#include "acpi.h"
 #include "sched.h"
 #include "fat12.h"
 #include "shell.h"
@@ -79,6 +80,17 @@ void kernel_main(void) {
     kheap_init();
     console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
     console_write("ok\n");
+
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  Reading ACPI tables (power-off) .... ... ");
+    acpi_init();
+    if (acpi_available()) {
+        console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+        console_write("ok\n");
+    } else {
+        console_set_color(VGA_YELLOW, VGA_BLACK);
+        console_write("none\n");
+    }
 
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     console_write("  Starting scheduler + demo tasks .... ... ");
