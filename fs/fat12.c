@@ -13,9 +13,9 @@
 #include "string.h"
 #include <stdint.h>
 
-/* Where the FAT12 volume begins on the floppy (must match the Makefile's dd
- * seek): sector 0 = boot, 1..48 = kernel budget, so 64 leaves a safe gap. */
-#define FS_BASE_LBA 64u
+/* The whole floppy is one FAT12 volume now (boot sector + kernel live inside
+ * it as sector 0 and the KERNEL.BIN file), so the volume starts at LBA 0. */
+#define FS_BASE_LBA 0u
 
 #define ATTR_LFN    0x0F
 #define ATTR_VOLUME 0x08

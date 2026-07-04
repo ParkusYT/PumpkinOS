@@ -13,7 +13,7 @@ paging (identity-mapped, with a `map`/`unmap` API), a kernel heap
 (`kmalloc`/`kfree`), preemptive multitasking (round-robin kernel threads
 switched on the timer tick), user mode (ring 3 with a TSS and an `int 0x80`
 syscall interface), a floppy disk driver (8272 FDC + ISA DMA) with a read-only
-FAT12 filesystem, and **PumpkinShell (PKSH)**.
+FAT12 filesystem the kernel boots from as a file, and **PumpkinShell (PKSH)**.
 
 ## What's here
 
@@ -22,8 +22,8 @@ under these directories (with each on the `-I` header path).
 
 | Path                    | Role                                                       |
 |-------------------------|------------------------------------------------------------|
-| `boot/boot.asm`         | 512-byte BIOS boot sector: gathers the E820 map, loads the kernel (INT 13h), enables A20, sets up a flat GDT, enters 32-bit protected mode. |
-| `kernel/entry.asm`      | 32-bit entry stub: zeroes `.bss`, sets up the stack, calls `kernel_main`. |
+| `boot/boot.asm`         | 512-byte FAT12 boot sector: carries a BPB, finds `KERNEL.BIN` in the root directory, follows its cluster chain to load it at 0x1000, jumps to it. |
+| `kernel/entry.asm`      | Kernel entry: 16-bit stub does E820 + A20 + GDT + switch to protected mode, then 32-bit part zeroes `.bss`, sets the stack, calls `kernel_main`. |
 | `kernel/kernel.c`       | Kernel entry: brings every subsystem up in order, then runs the shell. |
 | `cpu/gdt.{c,h}`         | Kernel GDT (ring 0/3 segments) + TSS for ring-3 → ring-0 traps. |
 | `cpu/idt.{c,h}`         | Builds/loads the IDT; dispatches exceptions, IRQs, syscalls. |
@@ -78,13 +78,17 @@ halt          stop the CPU
 ## Boot flow
 
 ```
-BIOS  --loads sector 0 to 0x7C00-->  boot.asm (16-bit real mode)
+BIOS  --loads sector 0 to 0x7C00-->  boot.asm (16-bit real mode, FAT12)
   1. set up segments + stack, save boot drive
-  2. gather the BIOS memory map (INT 15h/E820) into 0x0500  (real mode only!)
-  3. read the kernel from the floppy into memory at 0x1000  (LBA -> CHS, with retries)
-  4. enable the A20 line
-  5. load the GDT, set CR0.PE, far-jump into 32-bit protected mode
-  6. jump to 0x1000
+  2. read the root directory, scan it for "KERNEL  BIN"
+  3. read the FAT, follow KERNEL.BIN's cluster chain, load it to 0x1000
+  4. jump to 0x1000 (still real mode)
+                       |
+                       v
+entry.asm (16-bit stub):
+  1. gather the BIOS memory map (INT 15h/E820) into 0x0500  (real mode only!)
+  2. enable the A20 line
+  3. load the GDT, set CR0.PE, far-jump into 32-bit protected mode
                        |
                        v
 entry.asm (32-bit): zero .bss, set stack --> kernel_main() in kernel.c
@@ -198,36 +202,41 @@ read, user mode* - rather than being allowed.
 
 ## Floppy driver + FAT12 filesystem
 
-The floppy holds the boot sector, then the kernel, then a small **FAT12** image
-(built from `fsroot/` with `mkfs.fat` + `mcopy`, written at sector 64).
+The **whole floppy is a single FAT12 volume** (a normal disk you can inspect
+with `mdir`/`mcopy` or mount on Linux). The kernel itself lives inside it as the
+file `KERNEL.BIN`, next to the `fsroot/` text files - so `ls` shows the actual
+kernel that boots the machine. The boot sector is a real FAT12 boot sector: it
+carries a BPB and parses the root directory + FAT to find and load `KERNEL.BIN`.
 
-The kernel reads it **off the real drive** with a floppy disk controller
-driver (`drivers/floppy.c`). To fetch a sector it spins up the motor, seeks the
-cylinder, programs **ISA DMA channel 2** to receive the data into a low bounce
-buffer, issues the FDC *Read Data* command, and waits for the drive's **IRQ 6**;
-the sector then arrives in memory by DMA. Because that needs interrupts (for
-IRQ 6) and the timer (for motor spin-up), the driver and filesystem come up
-*after* `sti`.
+Once running, the kernel reads the same disk **off the real drive** with a
+floppy disk controller driver (`drivers/floppy.c`). To fetch a sector it spins
+up the motor, seeks the cylinder, programs **ISA DMA channel 2** to receive the
+data into a low bounce buffer, issues the FDC *Read Data* command, and waits
+for the drive's **IRQ 6**; the sector arrives in memory by DMA. Because that
+needs interrupts (IRQ 6) and the timer (motor spin-up), the driver and
+filesystem come up *after* `sti`.
 
-On top of that, `fs/fat12.c` mounts the volume: it reads and caches the BPB,
-the FAT and the root directory, then serves:
+`fs/fat12.c` mounts the volume by caching the BPB, the FAT and the root
+directory, then serves:
 
-- `ls` - list the root directory with file sizes.
+- `ls` - list the root directory with file sizes (including `KERNEL.BIN`).
 - `cat <file>` - walk the file's cluster chain (looking each next cluster up in
   the cached FAT) and stream it off the disk. Names match case-insensitively
   against the 8.3 entries.
 
-To add files, drop them in `fsroot/` and rebuild - `make` reformats the image
-and copies them in. (The filesystem is read-only from inside PumpkinOS.)
+To add files, drop them in `fsroot/` and rebuild - `make` reformats the volume,
+copies `KERNEL.BIN` and your files in, and overlays the boot sector. (The
+filesystem is read-only from inside PumpkinOS.)
 
 ## Memory layout (physical)
 
 ```
 0x00000000  Real-mode IVT / BIOS data area
 0x00000500  BIOS E820 memory map (count + entries, from the bootloader)
-0x00001000  Kernel image (loaded here, grows upward)
-   ...      (kernel load budget ends at 0x7000 -- see MAX_KERNEL_SECTORS)
-0x00007C00  Boot sector (running) + stack growing down from here
+0x00001000  KERNEL.BIN (loaded here by the boot sector, grows upward)
+   ...      (kernel must stay below 0x7C00 -- see MAX_KERNEL_SECTORS)
+0x00007C00  Boot sector (running) + real-mode stack below it
+0x00007E00  Boot-time scratch: FAT (0x7E00) then root directory (0x9000)
 0x00020000  Floppy DMA bounce buffer (ISA DMA, < 16 MB, 64 KB-aligned)
 0x00090000  Protected-mode kernel stack top
 0x000B8000  VGA text framebuffer (80x25)
@@ -270,9 +279,11 @@ hardware. The image is a standard 1.44 MB raw floppy.)
   the kernel), then a **write path** for the filesystem, and an ATA/IDE driver
   so PumpkinOS can also use a hard disk.
 - Known simplifications: the filesystem is read-only and the floppy driver only
-  reads (no write, single drive, PIO-free/DMA only); dead tasks leak their
-  stack/TCB (no reaper); all tasks share one address space; user pages are not
-  freed on exit. All fine for the current demos.
+  reads (no write, single drive); dead tasks leak their stack/TCB (no reaper);
+  all tasks share one address space; user pages are not freed on exit.
+- `KERNEL.BIN` loads at 0x1000 and must stay below 0x7C00, so it is capped at
+  48 sectors (currently ~44). When it gets tight, the fix is a small
+  second-stage loader or a higher load address.
 - The bootloader gathers the memory map with `INT 15h/E820`, which every PC
   BIOS since ~1994 supports; genuinely ancient machines without it would need
   an `E801`/`AH=88h` fallback added to `do_e820`.

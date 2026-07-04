@@ -63,45 +63,23 @@ HEADERS    := $(wildcard $(addsuffix /*.h,$(SRC_DIRS)))
 KERNEL_ELF := $(BUILD)/kernel.elf
 KERNEL_BIN := $(BUILD)/kernel.bin
 
-# FAT12 image: built from every file in fsroot/ and written onto the floppy at
-# sector FS_LBA, where the kernel's floppy-backed FAT12 driver expects it.
-# 256 sectors = 128 KiB. FS_LBA=64 clears the boot sector + kernel budget.
+# Extra files copied into the FAT12 filesystem (the kernel itself is also a
+# file, KERNEL.BIN, so it shows up in 'ls').
 FSROOT     := fsroot
-FS_IMG     := $(BUILD)/fs.img
-FS_SECTORS := 256
-FS_LBA     := 64
 FS_FILES   := $(wildcard $(FSROOT)/*)
 
-# The kernel loads at 0x1000 and grows upward; it must end below the boot
-# sector at 0x7C00. 48 sectors ends at 0x7000, leaving headroom for the stack.
+# KERNEL.BIN is loaded at 0x1000 by the boot sector and must stay below the
+# boot sector at 0x7C00. 48 sectors leaves headroom for the FAT/root scratch
+# buffers the boot sector uses above 0x7C00.
 MAX_KERNEL_SECTORS := 48
 
 .PHONY: all run run-serial clean
 
 all: $(IMG)
 
-# ---- boot sector ------------------------------------------------------------
-# Assembled AFTER the kernel so we can tell it the exact sector count to load
-# (over-reading would run the disk load straight over the boot code at 0x7C00).
-$(BOOT_BIN): $(BOOT_SRC) $(KERNEL_BIN) | $(BUILD)
-	@ksize=$$(( ($$(wc -c < $(KERNEL_BIN)) + 511) / 512 )); \
-	if [ $$ksize -gt $(MAX_KERNEL_SECTORS) ]; then \
-	    echo "ERROR: kernel is $$ksize sectors but the load budget is $(MAX_KERNEL_SECTORS) (would collide with the boot sector at 0x7C00)."; \
-	    echo "       Shrink the kernel, or move its load address in boot/boot.asm."; \
-	    exit 1; \
-	fi; \
-	echo "Kernel occupies $$ksize / $(MAX_KERNEL_SECTORS) sectors; assembling boot sector."; \
-	$(NASM) -f bin -DKSECTORS=$$ksize $< -o $@
-
-# ---- FAT12 filesystem image (mkfs.fat + mcopy the fsroot/ files) ------------
-$(FS_IMG): $(FS_FILES) | $(BUILD)
-	dd if=/dev/zero of=$@ bs=512 count=$(FS_SECTORS) status=none
-	mkfs.fat -F 12 -s 1 -r 32 -n PUMPKIN $@ >/dev/null
-	@for f in $(FS_FILES); do \
-	    dest=$$(basename "$$f" | tr 'a-z' 'A-Z'); \
-	    MTOOLS_SKIP_CHECK=1 mcopy -i $@ "$$f" "::$$dest"; \
-	done
-	@echo "Built $@ ($(FS_SECTORS) sectors) with: $(notdir $(FS_FILES))"
+# ---- boot sector: assemble the FAT12 loader (carries its own BPB) -----------
+$(BOOT_BIN): $(BOOT_SRC) | $(BUILD)
+	$(NASM) -f bin $< -o $@
 
 # ---- kernel: assemble any .asm (found via VPATH across SRC_DIRS) ------------
 $(BUILD)/%.o: %.asm | $(BUILD)
@@ -122,15 +100,28 @@ $(KERNEL_ELF): $(KERNEL_OBJS) linker.ld
 # ---- kernel: strip ELF wrapper down to a flat binary ------------------------
 $(KERNEL_BIN): $(KERNEL_ELF)
 	$(OBJCOPY) -O binary $< $@
+	@ksize=$$(( ($$(wc -c < $@) + 511) / 512 )); \
+	if [ $$ksize -gt $(MAX_KERNEL_SECTORS) ]; then \
+	    echo "ERROR: KERNEL.BIN is $$ksize sectors but must fit in $(MAX_KERNEL_SECTORS) (it loads at 0x1000, below 0x7C00)."; \
+	    exit 1; \
+	fi; \
+	echo "KERNEL.BIN occupies $$ksize / $(MAX_KERNEL_SECTORS) sectors."
 
 # ---- assemble the floppy image ----------------------------------------------
-# Layout: sector 0 = boot, sectors 1..K = kernel, sectors $(FS_LBA).. = FAT12.
-$(IMG): $(BOOT_BIN) $(KERNEL_BIN) $(FS_IMG)
+# The whole floppy is one FAT12 volume. We format it, copy the kernel in as the
+# file KERNEL.BIN (so 'ls' shows it) along with the fsroot/ files, then overlay
+# our own boot sector (its BPB matches the standard 1.44 MB layout mkfs.fat
+# used, so the volume stays consistent).
+$(IMG): $(BOOT_BIN) $(KERNEL_BIN) $(FS_FILES)
 	dd if=/dev/zero of=$(IMG) bs=512 count=2880 status=none
-	dd if=$(BOOT_BIN)   of=$(IMG) conv=notrunc status=none
-	dd if=$(KERNEL_BIN) of=$(IMG) seek=1 conv=notrunc status=none
-	dd if=$(FS_IMG)     of=$(IMG) seek=$(FS_LBA) conv=notrunc status=none
-	@echo "Built $(IMG) (1.44 MB floppy: boot + kernel@1 + FAT12@$(FS_LBA))."
+	mkfs.fat -F 12 -n PUMPKIN $(IMG) >/dev/null
+	MTOOLS_SKIP_CHECK=1 mcopy -i $(IMG) $(KERNEL_BIN) ::KERNEL.BIN
+	@for f in $(FS_FILES); do \
+	    dest=$$(basename "$$f" | tr 'a-z' 'A-Z'); \
+	    MTOOLS_SKIP_CHECK=1 mcopy -i $(IMG) "$$f" "::$$dest"; \
+	done
+	dd if=$(BOOT_BIN) of=$(IMG) conv=notrunc status=none
+	@echo "Built $(IMG) (1.44 MB FAT12 floppy: boot sector + KERNEL.BIN + files)."
 
 $(BUILD):
 	mkdir -p $(BUILD)

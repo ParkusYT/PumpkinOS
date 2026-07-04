@@ -1,81 +1,201 @@
 ; =============================================================================
-; PumpkinOS - Stage 1 Bootloader (512-byte BIOS boot sector)
+; PumpkinOS - FAT12 boot sector
 ; -----------------------------------------------------------------------------
-; The BIOS loads this sector to physical address 0x7C00 in 16-bit real mode
-; and jumps to it. Its job is to:
-;   1. Set up a stack and save the BIOS boot drive number.
-;   2. Load the kernel from the floppy into memory at 0x1000.
-;   3. Enable the A20 line (access to memory above 1 MB).
-;   4. Load a flat GDT and enter 32-bit protected mode.
-;   5. Jump to the kernel entry point.
+; The whole floppy is a single FAT12 volume. This boot sector carries a BPB,
+; so DOS/Linux/mtools all see a normal FAT12 disk. Its job is to find the file
+; KERNEL.BIN in the root directory, follow its cluster chain to load it at
+; 0x1000, and jump to it in real mode. The kernel itself then does the E820
+; probe, A20, GDT and the switch to protected mode (see kernel/entry.asm).
 ; =============================================================================
 
 [bits 16]
 [org 0x7C00]
 
-KERNEL_OFFSET   equ 0x1000      ; where we load the kernel in memory
-
-; The build passes the exact kernel size with `nasm -DKSECTORS=<n>`, so we only
-; read as many sectors as the kernel actually occupies. This matters: the load
-; region grows upward from 0x1000, and reading too far would run straight over
-; the boot sector (0x7C00) and its stack, corrupting the code as it executes.
-%ifndef KSECTORS
-%define KSECTORS 8              ; sane fallback for a standalone assemble
-%endif
-KERNEL_SECTORS  equ KSECTORS
-
-; The BIOS memory map (INT 15h, EAX=E820) is gathered here in real mode and
-; left in low memory for the kernel to read once it is in protected mode:
-;   0x0500 : dword           number of entries
-;   0x0504 : 24-byte entries (base:qword, length:qword, type:dword, attr:dword)
-MMAP_COUNT      equ 0x0500
-MMAP_ENTRIES    equ 0x0504
+KERNEL_LOAD equ 0x1000      ; where the kernel file is loaded
+FAT_BUF     equ 0x7E00      ; scratch: the FAT (9 sectors)
+ROOT_BUF    equ 0x9000      ; scratch: the root directory (14 sectors)
 
 ; -----------------------------------------------------------------------------
-; Entry point
+; BIOS Parameter Block - standard 1.44 MB FAT12 geometry (must match mkfs.fat)
+; -----------------------------------------------------------------------------
+    jmp short start
+    nop
+    db "PUMPKIN "              ; 0x03 OEM name
+bpb_bytes_per_sec: dw 512      ; 0x0B
+bpb_sec_per_clus:  db 1        ; 0x0D
+bpb_reserved:      dw 1        ; 0x0E
+bpb_num_fats:      db 2        ; 0x10
+bpb_root_entries:  dw 224      ; 0x11
+bpb_total_secs:    dw 2880     ; 0x13
+bpb_media:         db 0xF0     ; 0x15
+bpb_sec_per_fat:   dw 9        ; 0x16
+bpb_sec_per_track: dw 18       ; 0x18
+bpb_num_heads:     dw 2        ; 0x1A
+bpb_hidden:        dd 0        ; 0x1C
+bpb_total_big:     dd 0        ; 0x20
+bpb_drive:         db 0        ; 0x24
+                   db 0        ; 0x25 reserved
+                   db 0x29     ; 0x26 extended boot signature
+                   dd 0x50554D50 ; 0x27 volume id
+                   db "PUMPKINOS  " ; 0x2B volume label (11)
+                   db "FAT12   " ; 0x36 fs type (8)   -> ends at 0x3D
+
+; -----------------------------------------------------------------------------
+; Boot code (starts at offset 0x3E)
 ; -----------------------------------------------------------------------------
 start:
-    cli                         ; no interrupts while we set up segments
+    cli
     xor ax, ax
     mov ds, ax
     mov es, ax
     mov ss, ax
-    mov sp, 0x7C00              ; stack grows down from just below us
-    mov [boot_drive], dl        ; BIOS leaves the boot drive number in DL
+    mov sp, 0x7C00
+    mov [bpb_drive], dl        ; BIOS boot drive
     sti
-
-    call do_e820                ; gather the BIOS memory map while still in real mode
 
     mov si, msg_load
     call print_string
 
-    ; ---- load the kernel to 0x1000 (the kernel reads the FAT12 filesystem
-    ;      itself, off the real floppy, via its FDC driver) ----
-    mov word [lba], 1
-    mov word [sectors_left], KERNEL_SECTORS
-    mov word [dest_seg], KERNEL_OFFSET >> 4
-    call load_sectors
+    ; ---- root_lba = reserved + num_fats * sec_per_fat ----
+    mov al, [bpb_num_fats]
+    xor ah, ah
+    mul word [bpb_sec_per_fat]
+    add ax, [bpb_reserved]
+    mov [root_lba], ax
 
-    call enable_a20
+    ; ---- root_sectors = root_entries / 16  (32 bytes each, 512/sector) ----
+    mov ax, [bpb_root_entries]
+    shr ax, 4
+    mov [root_secs], ax
 
-    ; ---- switch to 32-bit protected mode ----
-    cli
-    lgdt [gdt_descriptor]       ; tell the CPU about our segment table
-    mov eax, cr0
-    or  eax, 0x1                ; set the Protection Enable bit
-    mov cr0, eax
-    jmp CODE_SEG:init_pm        ; far jump flushes the pipeline & loads CS
+    ; ---- data_lba = root_lba + root_sectors ----
+    add ax, [root_lba]
+    mov [data_lba], ax
+
+    ; ---- load the root directory ----
+    mov ax, [root_lba]
+    mov cx, [root_secs]
+    mov bx, ROOT_BUF
+    call read_sectors
+
+    ; ---- scan for "KERNEL  BIN" ----
+    mov di, ROOT_BUF
+    mov cx, [bpb_root_entries]
+.scan:
+    push cx
+    push di
+    mov si, kernel_name
+    mov cx, 11
+    repe cmpsb
+    pop di
+    pop cx
+    je .found
+    add di, 32
+    loop .scan
+    jmp disk_error            ; KERNEL.BIN not found
+
+.found:
+    mov ax, [di + 26]         ; first cluster
+    mov [cluster], ax
+
+    ; ---- load the FAT ----
+    mov ax, [bpb_reserved]
+    mov cx, [bpb_sec_per_fat]
+    mov bx, FAT_BUF
+    call read_sectors
+
+    ; ---- follow the cluster chain, loading the kernel to 0x1000 ----
+    mov bx, KERNEL_LOAD
+.load:
+    mov ax, [cluster]
+    cmp ax, 0x0FF8
+    jae .done
+    sub ax, 2                 ; LBA = data_lba + (cluster - 2) * 1
+    add ax, [data_lba]
+    mov cx, 1
+    call read_sectors        ; reads one sector to ES:BX, advances BX
+    mov ax, [cluster]
+    call next_cluster
+    mov [cluster], ax
+    jmp .load
+.done:
+    mov dl, [bpb_drive]
+    jmp 0x0000:KERNEL_LOAD    ; enter the kernel (still real mode)
 
 ; -----------------------------------------------------------------------------
-; print_string - print the NUL-terminated string at DS:SI via BIOS teletype
+; read_sectors - AX = start LBA, CX = count, ES:BX = dest (BX advances).
+; Converts LBA -> CHS using the BPB geometry, one sector per INT 13h, retries.
+; -----------------------------------------------------------------------------
+read_sectors:
+.loop:
+    test cx, cx
+    jz .ret
+    push cx
+    push ax
+    xor dx, dx
+    div word [bpb_sec_per_track]   ; ax = LBA / spt, dx = sector index
+    mov cl, dl
+    inc cl                         ; CL = sector number (1-based)
+    xor dx, dx
+    div word [bpb_num_heads]       ; ax = cylinder, dx = head
+    mov ch, al                     ; CH = cylinder low 8 bits
+    mov dh, dl                     ; DH = head
+    mov dl, [bpb_drive]
+    mov ax, 0x0201                 ; AH = read, AL = 1 sector
+    mov di, 5
+.retry:
+    int 0x13
+    jnc .ok
+    xor ah, ah
+    int 0x13                       ; reset controller, retry
+    dec di
+    jnz .retry
+    jmp disk_error
+.ok:
+    pop ax
+    pop cx
+    add bx, 512
+    inc ax
+    dec cx
+    jmp .loop
+.ret:
+    ret
+
+; -----------------------------------------------------------------------------
+; next_cluster - AX = cluster -> AX = next cluster (from the FAT in FAT_BUF).
+; FAT12 entries are 12 bits, packed 1.5 bytes each.
+; -----------------------------------------------------------------------------
+next_cluster:
+    push bx
+    push cx
+    mov cx, ax
+    and cx, 1                      ; odd/even
+    mov bx, ax
+    shr bx, 1
+    add bx, ax                     ; bx = cluster * 3 / 2
+    add bx, FAT_BUF
+    mov ax, [bx]
+    test cx, cx
+    jz .even
+    shr ax, 4                      ; odd cluster: high 12 bits
+    jmp .end
+.even:
+    and ax, 0x0FFF                 ; even cluster: low 12 bits
+.end:
+    pop cx
+    pop bx
+    ret
+
+; -----------------------------------------------------------------------------
+; print_string - NUL-terminated DS:SI via BIOS teletype
 ; -----------------------------------------------------------------------------
 print_string:
     pusha
 .next:
-    lodsb                       ; AL = [SI++]
+    lodsb
     test al, al
     jz .done
-    mov ah, 0x0E                ; BIOS teletype output
+    mov ah, 0x0E
     xor bh, bh
     int 0x10
     jmp .next
@@ -83,196 +203,23 @@ print_string:
     popa
     ret
 
-; -----------------------------------------------------------------------------
-; load_sectors - read [sectors_left] sectors from LBA [lba] into [dest_seg]:0000
-; One sector at a time, converting LBA -> CHS, with retry-on-error. The
-; destination segment advances by 0x20 paragraphs (512 bytes) per sector, so
-; loads larger than 64 KB cross segment boundaries cleanly.
-; Floppy geometry: 18 sectors/track, 2 heads.
-; -----------------------------------------------------------------------------
-load_sectors:
-    mov ax, [dest_seg]
-    mov es, ax
-    xor bx, bx                          ; ES:BX, BX stays 0
-.next_sector:
-    cmp word [sectors_left], 0
-    je .done
-
-    ; --- convert LBA (in [lba]) to CHS ---
-    mov ax, [lba]
-    xor dx, dx
-    mov cx, 18
-    div cx                              ; AX = LBA/18, DX = LBA%18
-    inc dx
-    mov [sector], dl                    ; sector = (LBA % 18) + 1
-
-    xor dx, dx
-    mov cx, 2
-    div cx                              ; AX = cylinder, DX = head
-    mov [cylinder], al
-    mov [head], dl
-
-    mov di, 5                           ; up to 5 attempts per sector
-.attempt:
-    mov ah, 0x02                        ; INT 13h: read sectors
-    mov al, 1                           ; one sector at a time
-    mov ch, [cylinder]
-    mov cl, [sector]
-    mov dh, [head]
-    mov dl, [boot_drive]
-    int 0x13
-    jnc .read_ok
-
-    ; on error: reset disk controller and retry
-    xor ah, ah
-    mov dl, [boot_drive]
-    int 0x13
-    dec di
-    jnz .attempt
-    jmp disk_error                      ; out of retries
-
-.read_ok:
-    mov ax, es                          ; advance destination by 512 bytes
-    add ax, 0x20
-    mov es, ax
-    inc word [lba]
-    dec word [sectors_left]
-    jmp .next_sector
-.done:
-    ret
-
-; -----------------------------------------------------------------------------
-; enable_a20 - try the BIOS service first, then fall back to the fast A20 gate
-; -----------------------------------------------------------------------------
-enable_a20:
-    mov ax, 0x2401                      ; BIOS: enable A20
-    int 0x15
-    in  al, 0x92                        ; fast A20 via System Control Port A
-    or  al, 0x02
-    and al, 0xFE                        ; make sure we don't accidentally reset
-    out 0x92, al
-    ret
-
-; -----------------------------------------------------------------------------
-; do_e820 - query the BIOS memory map (INT 15h, EAX=0xE820) into MMAP_ENTRIES,
-; and store the number of 24-byte entries at MMAP_COUNT. Real mode, ES = 0.
-; If the BIOS does not support E820, the count is left at 0 and the kernel
-; falls back to a safe default. (Canonical OSDev sequence.)
-; -----------------------------------------------------------------------------
-do_e820:
-    mov dword [MMAP_COUNT], 0           ; default: no entries
-    mov di, MMAP_ENTRIES
-    xor ebx, ebx                        ; continuation value must start at 0
-    xor bp, bp                          ; bp = running entry count
-    mov edx, 0x534D4150                 ; "SMAP"
-    mov eax, 0xE820
-    mov dword [es:di + 20], 1           ; force a valid ACPI 3.x entry
-    mov ecx, 24
-    int 0x15
-    jc .done                            ; carry on first call => unsupported
-    mov edx, 0x534D4150
-    cmp eax, edx                        ; success returns "SMAP" in eax
-    jne .done
-    test ebx, ebx                       ; ebx == 0 => list is only one (useless) entry
-    je .done
-    jmp .jmpin
-.loop:
-    mov eax, 0xE820
-    mov dword [es:di + 20], 1
-    mov ecx, 24
-    int 0x15
-    jc .finish                          ; carry now => end of the list
-    mov edx, 0x534D4150
-.jmpin:
-    jcxz .skip                          ; 0-length response => skip
-    cmp cl, 20
-    jbe .notext
-    test byte [es:di + 20], 1           ; ACPI "ignore this entry" bit set?
-    je .skip
-.notext:
-    mov eax, [es:di + 8]                ; length low dword
-    or  eax, [es:di + 12]               ; OR with high dword to test for zero
-    jz .skip
-    inc bp                              ; keep this entry
-    add di, 24
-.skip:
-    test ebx, ebx                       ; ebx back to 0 => list complete
-    jne .loop
-.finish:
-    mov [MMAP_COUNT], bp                ; store the count (high word already 0)
-.done:
-    ret
-
-; -----------------------------------------------------------------------------
-; disk_error - print a message and halt (still in real mode)
-; -----------------------------------------------------------------------------
 disk_error:
-    mov si, msg_disk_err
+    mov si, msg_err
     call print_string
 .hang:
     hlt
     jmp .hang
 
-; =============================================================================
-; 32-bit protected-mode continuation
-; =============================================================================
-[bits 32]
-init_pm:
-    mov ax, DATA_SEG                    ; reload the segment registers with our
-    mov ds, ax                          ; flat 4 GB data descriptor
-    mov es, ax
-    mov fs, ax
-    mov gs, ax
-    mov ss, ax
-    mov esp, 0x90000                    ; a comfortable protected-mode stack
-    jmp KERNEL_OFFSET                   ; off to the kernel!
-
-; =============================================================================
-; Global Descriptor Table - flat memory model (base 0, limit 4 GB)
-; =============================================================================
-gdt_start:
-    dq 0x0000000000000000              ; null descriptor (required)
-
-gdt_code:                               ; 0x08: code, base 0, limit 4 GB, 32-bit
-    dw 0xFFFF                           ; limit (bits 0-15)
-    dw 0x0000                           ; base  (bits 0-15)
-    db 0x00                             ; base  (bits 16-23)
-    db 10011010b                        ; present, ring 0, code, exec/read
-    db 11001111b                        ; 4 KB granularity, 32-bit, limit 16-19
-    db 0x00                             ; base  (bits 24-31)
-
-gdt_data:                               ; 0x10: data, base 0, limit 4 GB
-    dw 0xFFFF
-    dw 0x0000
-    db 0x00
-    db 10010010b                        ; present, ring 0, data, read/write
-    db 11001111b
-    db 0x00
-gdt_end:
-
-gdt_descriptor:
-    dw gdt_end - gdt_start - 1          ; size of GDT minus one
-    dd gdt_start                        ; linear address of GDT
-
-CODE_SEG equ gdt_code - gdt_start       ; selector 0x08
-DATA_SEG equ gdt_data - gdt_start       ; selector 0x10
-
-; =============================================================================
+; -----------------------------------------------------------------------------
 ; Data
-; =============================================================================
-boot_drive     db 0
-lba            dw 0
-sectors_left   dw 0
-dest_seg       dw 0
-cylinder       db 0
-head           db 0
-sector         db 0
-
-msg_load     db "Loading PumpkinOS...", 13, 10, 0
-msg_disk_err db "DISK ERROR!", 13, 10, 0
-
 ; -----------------------------------------------------------------------------
-; Boot sector padding and signature
-; -----------------------------------------------------------------------------
-times 510 - ($ - $$) db 0              ; pad to 510 bytes
-dw 0xAA55                               ; boot signature the BIOS looks for
+kernel_name db "KERNEL  BIN"
+root_lba    dw 0
+root_secs   dw 0
+data_lba    dw 0
+cluster     dw 0
+msg_load    db "Loading KERNEL.BIN...", 13, 10, 0
+msg_err     db "KERNEL.BIN not found!", 13, 10, 0
+
+times 510 - ($ - $$) db 0
+dw 0xAA55
