@@ -8,6 +8,7 @@
  * ========================================================================= */
 #include "fat12.h"
 #include "floppy.h"
+#include "rtc.h"
 #include "console.h"
 #include "kheap.h"
 #include "string.h"
@@ -193,11 +194,30 @@ static int dir_add(uint16_t dir_cluster, const uint8_t *entry) {
     }
 }
 
+/* Current time encoded into FAT's packed date and time words. */
+static void fat_now(uint16_t *fdate, uint16_t *ftime) {
+    struct rtc_time t;
+    rtc_read(&t);
+    uint16_t y = (t.year >= 1980) ? (uint16_t)(t.year - 1980) : 0;
+    *fdate = (uint16_t)((y << 9) | ((t.month & 0x0F) << 5) | (t.day & 0x1F));
+    *ftime = (uint16_t)(((t.hour & 0x1F) << 11) | ((t.minute & 0x3F) << 5) |
+                        ((t.second / 2) & 0x1F));
+}
+
 static void make_entry(const uint8_t *name83, uint8_t attr,
                        uint16_t first_cluster, uint32_t size, uint8_t *out) {
     memset(out, 0, 32);
     memcpy(out, name83, 11);
     out[11] = attr;
+
+    uint16_t fdate, ftime;
+    fat_now(&fdate, &ftime);
+    out[14] = (uint8_t)(ftime & 0xFF);  out[15] = (uint8_t)(ftime >> 8);  /* create time */
+    out[16] = (uint8_t)(fdate & 0xFF);  out[17] = (uint8_t)(fdate >> 8);  /* create date */
+    out[18] = (uint8_t)(fdate & 0xFF);  out[19] = (uint8_t)(fdate >> 8);  /* access date */
+    out[22] = (uint8_t)(ftime & 0xFF);  out[23] = (uint8_t)(ftime >> 8);  /* write time  */
+    out[24] = (uint8_t)(fdate & 0xFF);  out[25] = (uint8_t)(fdate >> 8);  /* write date  */
+
     out[26] = (uint8_t)(first_cluster & 0xFF);
     out[27] = (uint8_t)(first_cluster >> 8);
     out[28] = (uint8_t)(size & 0xFF);

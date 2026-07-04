@@ -16,6 +16,7 @@
 #include "sched.h"
 #include "gdt.h"
 #include "fat12.h"
+#include "rtc.h"
 #include "string.h"
 #include "io.h"
 
@@ -76,6 +77,7 @@ static void cmd_help(void) {
     console_write("  banner        draw the PumpkinOS banner\n");
     console_write("  about         about PumpkinOS\n");
     console_write("  colors        show the VGA colour palette\n");
+    console_write("  date          show the current date and time\n");
     console_write("  uptime        time since boot\n");
     console_write("  sleep <sec>   pause for <sec> seconds\n");
     console_write("  meminfo       show the physical memory map\n");
@@ -413,6 +415,23 @@ static void cmd_cd(const char *args) {
     fs_cd(args[0] ? args : "/");
 }
 
+static void print2(uint32_t v) {           /* zero-padded 2-digit */
+    if (v < 10) console_putc('0');
+    console_write_dec(v);
+}
+
+static void cmd_date(void) {
+    struct rtc_time t;
+    rtc_read(&t);
+    console_write_dec(t.year);
+    console_putc('-'); print2(t.month);
+    console_putc('-'); print2(t.day);
+    console_putc(' '); print2(t.hour);
+    console_putc(':'); print2(t.minute);
+    console_putc(':'); print2(t.second);
+    console_putc('\n');
+}
+
 static void cmd_mkdir(const char *args) {
     if (args[0] == '\0') { console_write("usage: mkdir <name>\n"); return; }
     fs_mkdir(args);
@@ -523,6 +542,8 @@ static void shell_execute(char *line) {
         cmd_cd(args);
     else if (strcmp(cmd, "pwd") == 0)
         fs_pwd();
+    else if (strcmp(cmd, "date") == 0 || strcmp(cmd, "time") == 0)
+        cmd_date();
     else if (strcmp(cmd, "mkdir") == 0)
         cmd_mkdir(args);
     else if (strcmp(cmd, "write") == 0)
