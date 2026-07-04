@@ -24,5 +24,6 @@ int  fs_cat(const char *name);          /* cat; -1 if not found */
 int  fs_create(const char *name, const char *data, uint32_t len);  /* write/touch */
 int  fs_mkdir(const char *name);        /* mkdir */
 int  fs_remove(const char *name);       /* rm (files only) */
+int  fs_rmdir(const char *name);        /* rmdir (empty directories) */
 
 #endif /* PUMPKIN_FAT12_H */

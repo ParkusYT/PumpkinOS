@@ -64,6 +64,7 @@ write <f> <t> create/overwrite file <f> with text <t>
 touch <file>  create an empty file
 mkdir <name>  create a directory
 rm <file>     delete a file
+rmdir <dir>   delete an empty directory
 banner        draw the PumpkinOS banner
 about         about PumpkinOS
 colors        show the 16-colour VGA palette
@@ -230,7 +231,8 @@ subdirectories, with a current working directory shown in the prompt:
   directory entry.
 - `mkdir <name>` - allocate a cluster, seed it with `.`/`..` entries, and link
   it into the parent.
-- `rm <file>` - free the cluster chain and mark the entry deleted.
+- `rm <file>` / `rmdir <dir>` - free the cluster chain and mark the entry
+  deleted (`rmdir` only removes an empty directory).
 
 Everything is written straight to the floppy, so changes **persist across
 reboots** and the disk stays a valid FAT12 volume - you can create a file in
@@ -290,9 +292,9 @@ hardware. The image is a standard 1.44 MB raw floppy.)
   read from the FAT12 disk and executed on demand (instead of being baked into
   the kernel), then an ATA/IDE driver so PumpkinOS can also use a hard disk.
 - Known simplifications: the FAT12 driver has no long-file-name or timestamp
-  support and `rm` only removes files (not directories); dead tasks leak their
-  stack/TCB (no reaper); all tasks share one address space; user pages are not
-  freed on exit.
+  support and `rmdir` only removes empty directories (no recursive delete);
+  dead tasks leak their stack/TCB (no reaper); all tasks share one address
+  space; user pages are not freed on exit.
 - `KERNEL.BIN` loads at 0x10000 and grows toward the floppy DMA buffer at
   0x80000, so it can be up to ~448 KiB (capped at 512 sectors / 256 KiB in the
   Makefile; currently ~43). Plenty of headroom.

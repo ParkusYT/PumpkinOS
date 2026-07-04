@@ -72,6 +72,7 @@ static void cmd_help(void) {
     console_write("  touch <file>  create an empty file\n");
     console_write("  mkdir <name>  create a directory\n");
     console_write("  rm <file>     delete a file\n");
+    console_write("  rmdir <dir>   delete an empty directory\n");
     console_write("  banner        draw the PumpkinOS banner\n");
     console_write("  about         about PumpkinOS\n");
     console_write("  colors        show the VGA colour palette\n");
@@ -433,6 +434,17 @@ static void cmd_rm(const char *args) {
     }
 }
 
+static void cmd_rmdir(const char *args) {
+    if (args[0] == '\0') { console_write("usage: rmdir <dir>\n"); return; }
+    if (fs_rmdir(args) != 0) {
+        console_set_color(VGA_LIGHT_RED, VGA_BLACK);
+        console_write("rmdir: not found: ");
+        console_write(args);
+        console_putc('\n');
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    }
+}
+
 /* write <file> <text> - create/overwrite a file with the given text. */
 static void cmd_write(char *args) {
     if (args[0] == '\0') { console_write("usage: write <file> <text>\n"); return; }
@@ -519,6 +531,8 @@ static void shell_execute(char *line) {
         cmd_touch(args);
     else if (strcmp(cmd, "rm") == 0 || strcmp(cmd, "del") == 0)
         cmd_rm(args);
+    else if (strcmp(cmd, "rmdir") == 0)
+        cmd_rmdir(args);
     else if (strcmp(cmd, "banner") == 0) {
         shell_banner();
         console_putc('\n');

@@ -463,6 +463,53 @@ int fs_remove(const char *name) {
     return 0;
 }
 
+/* ---- rmdir (empty directories only) --------------------------------------- */
+int fs_rmdir(const char *name) {
+    if (!mounted) return -1;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        console_write("rmdir: refusing to remove '.' or '..'\n");
+        return 0;
+    }
+
+    uint8_t name83[11];
+    to_83(name, name83);
+    uint32_t lba, off;
+    uint8_t ent[32];
+    if (!dir_find(cwd_cluster, name83, &lba, &off, ent)) { floppy_motor_off(); return -1; }
+    if (!(ent[11] & ATTR_DIR)) {
+        console_write("rmdir: not a directory\n");
+        floppy_motor_off();
+        return 0;
+    }
+
+    uint16_t dclus = (uint16_t)(ent[26] | (ent[27] << 8));
+
+    /* The directory must be empty (only '.' and '..'). */
+    uint8_t sec[512];
+    for (uint32_t idx = 0; ; idx++) {
+        uint32_t l = dir_sector_lba(dclus, idx);
+        if (l == 0) break;
+        if (read_fs(l, 1, sec) != 0) break;
+        for (int e = 0; e < 16; e++) {
+            uint8_t *en = sec + e * 32;
+            if (en[0] == 0x00) goto empty;
+            if (en[0] == 0xE5 || en[11] == ATTR_LFN) continue;
+            if (en[0] == '.') continue;              /* '.' and '..' */
+            console_write("rmdir: directory not empty\n");
+            floppy_motor_off();
+            return 0;
+        }
+    }
+empty:
+    free_chain(dclus);
+    fat_flush();
+    read_fs(lba, 1, sec);
+    sec[off] = 0xE5;                 /* mark the parent entry deleted */
+    write_fs(lba, 1, sec);
+    floppy_motor_off();
+    return 0;
+}
+
 /* ---- cd / pwd ------------------------------------------------------------- */
 static void path_push(const char *name) {
     uint32_t l = strlen(cwd_path);
