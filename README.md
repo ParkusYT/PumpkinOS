@@ -12,7 +12,8 @@ physical memory manager (bitmap frame allocator over the BIOS E820 map),
 paging (identity-mapped, with a `map`/`unmap` API), a kernel heap
 (`kmalloc`/`kfree`), preemptive multitasking (round-robin kernel threads
 switched on the timer tick), user mode (ring 3 with a TSS and an `int 0x80`
-syscall interface), and **PumpkinShell (PKSH)**.
+syscall interface), a read-only FAT12 filesystem, and
+**PumpkinShell (PKSH)**.
 
 ## What's here
 
@@ -40,8 +41,10 @@ under these directories (with each on the `-I` header path).
 | `sched/sched.{c,h}`     | Round-robin scheduler: kernel threads, `task_spawn`, preemption. |
 | `sched/switch.asm`      | `context_switch` - saves/restores registers and swaps stacks. |
 | `shell/shell.{c,h}`     | PumpkinShell (PKSH): the interactive command loop.         |
+| `fs/fat12.{c,h}`        | Read-only FAT12 driver over the boot RAM disk (`ls`/`cat`). |
 | `user/user.asm`         | Position-independent ring-3 demo programs (run via syscalls). |
 | `lib/string.{c,h}`      | Freestanding `memset`/`memcpy`/`strcmp`/…                  |
+| `fsroot/`               | Files copied into the FAT12 image at build time.          |
 | `linker.ld`             | Links the kernel as a flat binary at physical address `0x1000`. |
 | `Makefile`           | Builds everything into `pumpkinos.img`.                      |
 
@@ -51,6 +54,8 @@ under these directories (with each on the `-I` header path).
 help          list the built-in commands
 clear, cls    clear the screen
 echo <text>   print <text>
+ls            list files on the FAT12 disk
+cat <file>    print a file's contents (case-insensitive name)
 banner        draw the PumpkinOS banner
 about         about PumpkinOS
 colors        show the 16-colour VGA palette
@@ -76,9 +81,10 @@ BIOS  --loads sector 0 to 0x7C00-->  boot.asm (16-bit real mode)
   1. set up segments + stack, save boot drive
   2. gather the BIOS memory map (INT 15h/E820) into 0x0500  (real mode only!)
   3. read the kernel from the floppy into memory at 0x1000  (LBA -> CHS, with retries)
-  4. enable the A20 line
-  5. load the GDT, set CR0.PE, far-jump into 32-bit protected mode
-  6. jump to 0x1000
+  4. read the FAT12 image (right after the kernel) into 0x30000  (the RAM disk)
+  5. enable the A20 line
+  6. load the GDT, set CR0.PE, far-jump into 32-bit protected mode
+  7. jump to 0x1000
                        |
                        v
 entry.asm (32-bit): zero .bss, set stack --> kernel_main() in kernel.c
@@ -91,9 +97,10 @@ entry.asm (32-bit): zero .bss, set stack --> kernel_main() in kernel.c
   7. keyboard_init() -- drain the 8042, unmask IRQ1
   8. paging_init()   -- identity-map RAM, load CR3, set CR0.PG
   9. kheap_init()    -- reserve the heap's virtual region at 3 GiB
- 10. sched_init()    -- turn this boot context into task 0, spawn demo threads
- 11. sti             -- enable interrupts (preemption starts)
- 12. shell_run()     -- PumpkinShell REPL (task 0; reads keys via IRQ1)
+ 10. fs_init()       -- parse the FAT12 BPB in the RAM disk at 0x30000
+ 11. sched_init()    -- turn this boot context into task 0, spawn demo threads
+ 12. sti             -- enable interrupts (preemption starts)
+ 13. shell_run()     -- PumpkinShell REPL (task 0; reads keys via IRQ1)
 ```
 
 ## Interrupts & the keyboard
@@ -188,6 +195,22 @@ Protection is real: the identity map is supervisor-only, so `userfault` (a
 ring-3 read of a kernel page) takes a page fault - *protection violation, on
 read, user mode* - rather than being allowed.
 
+## Filesystem (FAT12)
+
+The floppy holds the boot sector, then the kernel, then a small **FAT12**
+image (built from `fsroot/` with `mkfs.fat` + `mcopy`). A protected-mode kernel
+can't call the BIOS to read the disk and doesn't have a floppy driver, so the
+bootloader copies that FAT12 image into memory at `0x30000` - a **RAM disk** -
+while it is still in real mode. `fs/fat12.c` then parses the BPB, walks the FAT
+and root directory, and streams file contents straight out of that buffer:
+
+- `ls` lists the root directory with file sizes.
+- `cat <file>` follows a file's cluster chain and prints it (names are
+  matched case-insensitively against the 8.3 entries).
+
+To add files, drop them in `fsroot/` and rebuild - `make` reformats the image
+and copies them in. (The filesystem is read-only from inside PumpkinOS.)
+
 ## Memory layout (physical)
 
 ```
@@ -196,6 +219,7 @@ read, user mode* - rather than being allowed.
 0x00001000  Kernel image (loaded here, grows upward)
    ...      (kernel load budget ends at 0x7000 -- see MAX_KERNEL_SECTORS)
 0x00007C00  Boot sector (running) + stack growing down from here
+0x00030000  FAT12 RAM disk (filesystem image loaded by the bootloader)
 0x00090000  Protected-mode kernel stack top
 0x000B8000  VGA text framebuffer (80x25)
 0x00100000  Physical-memory-manager bitmap, then free frames
@@ -231,13 +255,14 @@ hardware. The image is a standard 1.44 MB raw floppy.)
 
 - Done so far: protected mode, IDT + exception/page-fault handlers, PIC remap,
   PIT timer, PS/2 keyboard, physical memory manager, paging, a kernel heap,
-  preemptive multitasking, ring-3 user mode + syscalls, and the shell. Natural
-  next steps: a **FAT12 filesystem** so the shell can list/read files off the
-  boot floppy, then an **ELF loader** so `int 0x80` programs can be loaded and
-  run from disk instead of being baked into the kernel.
-- Known simplifications: dead tasks leak their stack/TCB (no reaper), all tasks
-  share one address space (no per-process page directory), and user pages are
-  not freed on exit. All fine for the current demos.
+  preemptive multitasking, ring-3 user mode + syscalls, a FAT12 filesystem, and
+  the shell. Natural next steps: an **ELF loader** so ring-3 programs can be
+  read from the FAT12 disk and executed on demand (instead of being baked into
+  the kernel), then a **write path** for the filesystem, and a real floppy/ATA
+  disk driver so the FS is not limited to the boot RAM disk.
+- Known simplifications: the filesystem is a read-only RAM disk loaded at boot;
+  dead tasks leak their stack/TCB (no reaper); all tasks share one address
+  space; user pages are not freed on exit. All fine for the current demos.
 - The bootloader gathers the memory map with `INT 15h/E820`, which every PC
   BIOS since ~1994 supports; genuinely ancient machines without it would need
   an `E801`/`AH=88h` fallback added to `do_e820`.

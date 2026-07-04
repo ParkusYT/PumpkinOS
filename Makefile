@@ -30,7 +30,7 @@ GCC_INC := $(shell $(CC) -print-file-name=include)
 # to the header search path, so `#include "foo.h"` keeps working regardless of
 # which directory a file lives in, and VPATH lets the pattern rules find the
 # matching .c/.asm.
-SRC_DIRS := kernel cpu mm drivers sched lib shell user
+SRC_DIRS := kernel cpu mm drivers sched lib shell user fs
 VPATH    := $(SRC_DIRS)
 INCLUDES := $(addprefix -I,$(SRC_DIRS))
 
@@ -63,6 +63,13 @@ HEADERS    := $(wildcard $(addsuffix /*.h,$(SRC_DIRS)))
 KERNEL_ELF := $(BUILD)/kernel.elf
 KERNEL_BIN := $(BUILD)/kernel.bin
 
+# FAT12 RAM-disk image: built from every file in fsroot/, loaded by the
+# bootloader to 0x30000. 256 sectors = 128 KiB (fits below the kernel stack).
+FSROOT     := fsroot
+FS_IMG     := $(BUILD)/fs.img
+FS_SECTORS := 256
+FS_FILES   := $(wildcard $(FSROOT)/*)
+
 # The kernel loads at 0x1000 and grows upward; it must end below the boot
 # sector at 0x7C00. 48 sectors ends at 0x7000, leaving headroom for the stack.
 MAX_KERNEL_SECTORS := 48
@@ -81,8 +88,18 @@ $(BOOT_BIN): $(BOOT_SRC) $(KERNEL_BIN) | $(BUILD)
 	    echo "       Shrink the kernel, or move its load address in boot/boot.asm."; \
 	    exit 1; \
 	fi; \
-	echo "Kernel occupies $$ksize / $(MAX_KERNEL_SECTORS) sectors; assembling boot sector to load $$ksize."; \
-	$(NASM) -f bin -DKSECTORS=$$ksize $< -o $@
+	echo "Kernel occupies $$ksize / $(MAX_KERNEL_SECTORS) sectors; assembling boot sector to load $$ksize + $(FS_SECTORS) FS."; \
+	$(NASM) -f bin -DKSECTORS=$$ksize -DFSECTORS=$(FS_SECTORS) $< -o $@
+
+# ---- FAT12 filesystem image (mkfs.fat + mcopy the fsroot/ files) ------------
+$(FS_IMG): $(FS_FILES) | $(BUILD)
+	dd if=/dev/zero of=$@ bs=512 count=$(FS_SECTORS) status=none
+	mkfs.fat -F 12 -n PUMPKIN $@ >/dev/null
+	@for f in $(FS_FILES); do \
+	    dest=$$(basename "$$f" | tr 'a-z' 'A-Z'); \
+	    MTOOLS_SKIP_CHECK=1 mcopy -i $@ "$$f" "::$$dest"; \
+	done
+	@echo "Built $@ ($(FS_SECTORS) sectors) with: $(notdir $(FS_FILES))"
 
 # ---- kernel: assemble any .asm (found via VPATH across SRC_DIRS) ------------
 $(BUILD)/%.o: %.asm | $(BUILD)
@@ -105,14 +122,14 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 	$(OBJCOPY) -O binary $< $@
 
 # ---- assemble the floppy image ----------------------------------------------
-$(IMG): $(BOOT_BIN) $(KERNEL_BIN)
-	# Start with a blank 1.44 MB floppy (2880 x 512-byte sectors).
-	dd if=/dev/zero of=$(IMG) bs=512 count=2880 status=none
-	# Boot sector goes in sector 0.
-	dd if=$(BOOT_BIN) of=$(IMG) conv=notrunc status=none
-	# Kernel goes right after it, starting at sector 1 (LBA 1).
-	dd if=$(KERNEL_BIN) of=$(IMG) seek=1 conv=notrunc status=none
-	@echo "Built $(IMG) (1.44 MB floppy)."
+# Layout: sector 0 = boot, sectors 1..K = kernel, sectors K+1.. = FAT12 image.
+$(IMG): $(BOOT_BIN) $(KERNEL_BIN) $(FS_IMG)
+	@ksize=$$(( ($$(wc -c < $(KERNEL_BIN)) + 511) / 512 )); \
+	dd if=/dev/zero of=$(IMG) bs=512 count=2880 status=none; \
+	dd if=$(BOOT_BIN)   of=$(IMG) conv=notrunc status=none; \
+	dd if=$(KERNEL_BIN) of=$(IMG) seek=1 conv=notrunc status=none; \
+	dd if=$(FS_IMG)     of=$(IMG) seek=$$(( 1 + ksize )) conv=notrunc status=none; \
+	echo "Built $(IMG) (1.44 MB floppy: boot + kernel@1 + FAT12@$$(( 1 + ksize )))."
 
 $(BUILD):
 	mkdir -p $(BUILD)

@@ -1,0 +1,11 @@
+PumpkinOS - a small 32-bit, BIOS-only operating system.
+
+Features so far:
+  - custom bootloader, 32-bit protected mode
+  - GDT/IDT, 8259 PIC, PIT timer, PS/2 keyboard
+  - physical memory manager, paging, kernel heap
+  - preemptive multitasking (round-robin kernel threads)
+  - ring-3 user mode with int 0x80 system calls
+  - this FAT12 filesystem, read from a RAM disk
+
+All written in C and a little assembly. Happy hacking!

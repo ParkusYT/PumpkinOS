@@ -24,6 +24,17 @@ KERNEL_OFFSET   equ 0x1000      ; where we load the kernel in memory
 %endif
 KERNEL_SECTORS  equ KSECTORS
 
+; The FAT12 filesystem image is stored on the floppy right after the kernel and
+; loaded to physical 0x30000 as a RAM disk, so the protected-mode kernel can
+; read files from memory without a floppy driver. FSECTORS is passed by the
+; build (nasm -DFSECTORS=<n>); its start LBA is right after the kernel.
+%ifndef FSECTORS
+%define FSECTORS 0
+%endif
+FS_SECTORS      equ FSECTORS
+FS_START_LBA    equ 1 + KERNEL_SECTORS
+RAMDISK_SEG     equ 0x3000     ; 0x3000:0000 = physical 0x30000
+
 ; The BIOS memory map (INT 15h, EAX=E820) is gathered here in real mode and
 ; left in low memory for the kernel to read once it is in protected mode:
 ;   0x0500 : dword           number of entries
@@ -49,10 +60,21 @@ start:
     mov si, msg_load
     call print_string
 
-    call load_kernel            ; copy the kernel off the floppy into RAM
+    ; ---- load the kernel to 0x1000 ----
+    mov word [lba], 1
+    mov word [sectors_left], KERNEL_SECTORS
+    mov word [dest_seg], KERNEL_OFFSET >> 4
+    call load_sectors
 
-    mov si, msg_ok
-    call print_string
+    ; ---- load the FAT12 RAM disk to 0x30000 (skip if empty) ----
+    cmp word [fs_sectors_cfg], 0
+    je .no_fs
+    mov word [lba], FS_START_LBA
+    mov ax, [fs_sectors_cfg]
+    mov [sectors_left], ax
+    mov word [dest_seg], RAMDISK_SEG
+    call load_sectors
+.no_fs:
 
     call enable_a20
 
@@ -82,14 +104,16 @@ print_string:
     ret
 
 ; -----------------------------------------------------------------------------
-; load_kernel - read KERNEL_SECTORS sectors starting at LBA 1 into ES:KERNEL_OFFSET
-; Reads one sector at a time, converting LBA -> CHS, with retry-on-error.
+; load_sectors - read [sectors_left] sectors from LBA [lba] into [dest_seg]:0000
+; One sector at a time, converting LBA -> CHS, with retry-on-error. The
+; destination segment advances by 0x20 paragraphs (512 bytes) per sector, so
+; loads larger than 64 KB cross segment boundaries cleanly.
 ; Floppy geometry: 18 sectors/track, 2 heads.
 ; -----------------------------------------------------------------------------
-load_kernel:
-    mov word [lba], 1                   ; sector 1 = boot sector, kernel starts at LBA 1
-    mov word [sectors_left], KERNEL_SECTORS
-    mov bx, KERNEL_OFFSET               ; ES:BX = destination pointer (ES = 0)
+load_sectors:
+    mov ax, [dest_seg]
+    mov es, ax
+    xor bx, bx                          ; ES:BX, BX stays 0
 .next_sector:
     cmp word [sectors_left], 0
     je .done
@@ -128,7 +152,9 @@ load_kernel:
     jmp disk_error                      ; out of retries
 
 .read_ok:
-    add bx, 512                         ; advance destination by one sector
+    mov ax, es                          ; advance destination by 512 bytes
+    add ax, 0x20
+    mov es, ax
     inc word [lba]
     dec word [sectors_left]
     jmp .next_sector
@@ -254,16 +280,17 @@ DATA_SEG equ gdt_data - gdt_start       ; selector 0x10
 ; =============================================================================
 ; Data
 ; =============================================================================
-boot_drive   db 0
-lba          dw 0
-sectors_left dw 0
-cylinder     db 0
-head         db 0
-sector       db 0
+boot_drive     db 0
+lba            dw 0
+sectors_left   dw 0
+dest_seg       dw 0
+cylinder       db 0
+head           db 0
+sector         db 0
+fs_sectors_cfg dw FS_SECTORS
 
-msg_load     db "PumpkinOS: loading kernel...", 13, 10, 0
-msg_ok       db "PumpkinOS: entering protected mode.", 13, 10, 0
-msg_disk_err db "PumpkinOS: DISK READ ERROR!", 13, 10, 0
+msg_load     db "Loading PumpkinOS...", 13, 10, 0
+msg_disk_err db "DISK ERROR!", 13, 10, 0
 
 ; -----------------------------------------------------------------------------
 ; Boot sector padding and signature

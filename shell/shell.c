@@ -15,6 +15,7 @@
 #include "kheap.h"
 #include "sched.h"
 #include "gdt.h"
+#include "fat12.h"
 #include "string.h"
 #include "io.h"
 
@@ -63,6 +64,8 @@ static void cmd_help(void) {
     console_write("  help          show this help\n");
     console_write("  clear, cls    clear the screen\n");
     console_write("  echo <text>   print <text>\n");
+    console_write("  ls            list files on the FAT12 disk\n");
+    console_write("  cat <file>    print a file's contents\n");
     console_write("  banner        draw the PumpkinOS banner\n");
     console_write("  about         about PumpkinOS\n");
     console_write("  colors        show the VGA colour palette\n");
@@ -381,6 +384,24 @@ static void cmd_userfault(void) {
     task_spawn(user_task_entry, (void *)1, "userflt");
 }
 
+static void cmd_ls(void) {
+    fs_list();
+}
+
+static void cmd_cat(const char *args) {
+    if (args[0] == '\0') {
+        console_write("usage: cat <filename>\n");
+        return;
+    }
+    if (fs_cat(args) != 0) {
+        console_set_color(VGA_LIGHT_RED, VGA_BLACK);
+        console_write("cat: file not found: ");
+        console_write(args);
+        console_putc('\n');
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    }
+}
+
 static void cmd_reboot(void) {
     console_write("Rebooting...\n");
     /* Pulse the CPU reset line via the 8042 keyboard controller. */
@@ -432,6 +453,10 @@ static void shell_execute(char *line) {
         console_write(args);
         console_putc('\n');
     }
+    else if (strcmp(cmd, "ls") == 0 || strcmp(cmd, "dir") == 0)
+        cmd_ls();
+    else if (strcmp(cmd, "cat") == 0 || strcmp(cmd, "type") == 0)
+        cmd_cat(args);
     else if (strcmp(cmd, "banner") == 0) {
         shell_banner();
         console_putc('\n');

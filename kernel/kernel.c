@@ -16,6 +16,7 @@
 #include "timer.h"
 #include "keyboard.h"
 #include "sched.h"
+#include "fat12.h"
 #include "shell.h"
 
 void kernel_main(void) {
@@ -76,6 +77,21 @@ void kernel_main(void) {
     kheap_init();
     console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
     console_write("ok\n");
+
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  Mounting FAT12 filesystem .......... ... ");
+    int files = fs_init();
+    console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+    if (files >= 0) {
+        console_write("ok");
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+        console_write("  (");
+        console_write_dec((uint32_t)files);
+        console_write(" files)\n");
+    } else {
+        console_set_color(VGA_YELLOW, VGA_BLACK);
+        console_write("none\n");
+    }
 
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     console_write("  Starting scheduler + demo tasks .... ... ");
