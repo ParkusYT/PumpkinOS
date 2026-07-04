@@ -7,6 +7,7 @@
  * hand control to PumpkinShell.
  * ========================================================================= */
 #include "console.h"
+#include "pmm.h"
 #include "idt.h"
 #include "pic.h"
 #include "timer.h"
@@ -19,6 +20,16 @@ void kernel_main(void) {
     shell_banner();
     console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
     console_write("\n  PumpkinOS kernel is alive!\n\n");
+
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  Scanning physical memory (E820) .... ... ");
+    pmm_init();
+    console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+    console_write("ok");
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  (");
+    console_write_dec(pmm_total_frames() * 4 / 1024);
+    console_write(" MB usable)\n");
 
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     console_write("  Installing interrupt descriptor table ... ");

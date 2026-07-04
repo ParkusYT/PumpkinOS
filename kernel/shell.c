@@ -10,6 +10,7 @@
 #include "console.h"
 #include "keyboard.h"
 #include "timer.h"
+#include "pmm.h"
 #include "string.h"
 #include "io.h"
 
@@ -39,6 +40,8 @@ static void cmd_help(void) {
     console_write("  colors        show the VGA colour palette\n");
     console_write("  uptime        time since boot\n");
     console_write("  sleep <sec>   pause for <sec> seconds\n");
+    console_write("  meminfo       show the physical memory map\n");
+    console_write("  memtest       allocate/free some frames\n");
     console_write("  reboot        restart the machine\n");
     console_write("  halt          stop the CPU\n");
 }
@@ -125,6 +128,41 @@ static void cmd_sleep(const char *args) {
     console_write("awake!\n");
 }
 
+static void cmd_meminfo(void) {
+    pmm_report();
+}
+
+/* Allocate a few frames, show their (distinct, page-aligned) addresses, then
+ * free them and confirm the free count is restored. Exercises the allocator. */
+static void cmd_memtest(void) {
+    uint32_t start_free = pmm_free_frames();
+    console_write("free frames before: ");
+    console_write_dec(start_free);
+    console_putc('\n');
+
+    uint32_t frames[4];
+    for (int i = 0; i < 4; i++) {
+        frames[i] = pmm_alloc_frame();
+        console_write("  alloc frame ");
+        console_write_dec((uint32_t)i);
+        console_write(" -> ");
+        console_write_hex(frames[i]);
+        console_putc('\n');
+    }
+    console_write("free frames after 4 allocs: ");
+    console_write_dec(pmm_free_frames());
+    console_putc('\n');
+
+    for (int i = 0; i < 4; i++)
+        pmm_free_frame(frames[i]);
+    console_write("free frames after freeing: ");
+    console_write_dec(pmm_free_frames());
+    if (pmm_free_frames() == start_free)
+        console_write("  (restored OK)\n");
+    else
+        console_write("  (MISMATCH!)\n");
+}
+
 static void cmd_reboot(void) {
     console_write("Rebooting...\n");
     /* Pulse the CPU reset line via the 8042 keyboard controller. */
@@ -188,6 +226,10 @@ static void shell_execute(char *line) {
         cmd_uptime();
     else if (strcmp(cmd, "sleep") == 0)
         cmd_sleep(args);
+    else if (strcmp(cmd, "meminfo") == 0)
+        cmd_meminfo();
+    else if (strcmp(cmd, "memtest") == 0)
+        cmd_memtest();
     else if (strcmp(cmd, "reboot") == 0)
         cmd_reboot();
     else if (strcmp(cmd, "halt") == 0)

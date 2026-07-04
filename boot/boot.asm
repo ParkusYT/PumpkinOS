@@ -24,6 +24,13 @@ KERNEL_OFFSET   equ 0x1000      ; where we load the kernel in memory
 %endif
 KERNEL_SECTORS  equ KSECTORS
 
+; The BIOS memory map (INT 15h, EAX=E820) is gathered here in real mode and
+; left in low memory for the kernel to read once it is in protected mode:
+;   0x0500 : dword           number of entries
+;   0x0504 : 24-byte entries (base:qword, length:qword, type:dword, attr:dword)
+MMAP_COUNT      equ 0x0500
+MMAP_ENTRIES    equ 0x0504
+
 ; -----------------------------------------------------------------------------
 ; Entry point
 ; -----------------------------------------------------------------------------
@@ -36,6 +43,8 @@ start:
     mov sp, 0x7C00              ; stack grows down from just below us
     mov [boot_drive], dl        ; BIOS leaves the boot drive number in DL
     sti
+
+    call do_e820                ; gather the BIOS memory map while still in real mode
 
     mov si, msg_load
     call print_string
@@ -136,6 +145,56 @@ enable_a20:
     or  al, 0x02
     and al, 0xFE                        ; make sure we don't accidentally reset
     out 0x92, al
+    ret
+
+; -----------------------------------------------------------------------------
+; do_e820 - query the BIOS memory map (INT 15h, EAX=0xE820) into MMAP_ENTRIES,
+; and store the number of 24-byte entries at MMAP_COUNT. Real mode, ES = 0.
+; If the BIOS does not support E820, the count is left at 0 and the kernel
+; falls back to a safe default. (Canonical OSDev sequence.)
+; -----------------------------------------------------------------------------
+do_e820:
+    mov dword [MMAP_COUNT], 0           ; default: no entries
+    mov di, MMAP_ENTRIES
+    xor ebx, ebx                        ; continuation value must start at 0
+    xor bp, bp                          ; bp = running entry count
+    mov edx, 0x534D4150                 ; "SMAP"
+    mov eax, 0xE820
+    mov dword [es:di + 20], 1           ; force a valid ACPI 3.x entry
+    mov ecx, 24
+    int 0x15
+    jc .done                            ; carry on first call => unsupported
+    mov edx, 0x534D4150
+    cmp eax, edx                        ; success returns "SMAP" in eax
+    jne .done
+    test ebx, ebx                       ; ebx == 0 => list is only one (useless) entry
+    je .done
+    jmp .jmpin
+.loop:
+    mov eax, 0xE820
+    mov dword [es:di + 20], 1
+    mov ecx, 24
+    int 0x15
+    jc .finish                          ; carry now => end of the list
+    mov edx, 0x534D4150
+.jmpin:
+    jcxz .skip                          ; 0-length response => skip
+    cmp cl, 20
+    jbe .notext
+    test byte [es:di + 20], 1           ; ACPI "ignore this entry" bit set?
+    je .skip
+.notext:
+    mov eax, [es:di + 8]                ; length low dword
+    or  eax, [es:di + 12]               ; OR with high dword to test for zero
+    jz .skip
+    inc bp                              ; keep this entry
+    add di, 24
+.skip:
+    test ebx, ebx                       ; ebx back to 0 => list complete
+    jne .loop
+.finish:
+    mov [MMAP_COUNT], bp                ; store the count (high word already 0)
+.done:
     ret
 
 ; -----------------------------------------------------------------------------

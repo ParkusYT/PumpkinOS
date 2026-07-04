@@ -7,7 +7,8 @@ a PS/2 keyboard, with output mirrored to the VGA text console and COM1 serial.
 
 It currently has: a two-stage-ish boot into protected mode, an interrupt
 descriptor table with a CPU-exception handler, a remapped 8259 PIC, a PIT
-timer (system tick), an interrupt-driven PS/2 keyboard driver, and
+timer (system tick), an interrupt-driven PS/2 keyboard driver, a physical
+memory manager (bitmap frame allocator over the BIOS E820 map), and
 **PumpkinShell (PSH)**.
 
 ## What's here
@@ -22,6 +23,7 @@ timer (system tick), an interrupt-driven PS/2 keyboard driver, and
 | `kernel/idt.{c,h}`   | Builds/loads the IDT; dispatches exceptions and IRQs.        |
 | `kernel/pic.{c,h}`   | Remaps the 8259 PIC (IRQs → vectors 32–47) and sends EOIs.   |
 | `kernel/timer.{c,h}` | PIT (8254) on IRQ0: 100 Hz system tick, uptime, `timer_sleep`. |
+| `kernel/pmm.{c,h}`   | Physical memory manager: bitmap allocator over the E820 map. |
 | `kernel/keyboard.{c,h}` | PS/2 keyboard driver: IRQ1, scancode set 1, shift/caps, ring buffer. |
 | `kernel/shell.{c,h}` | PumpkinShell (PSH): the interactive command loop.            |
 | `kernel/string.{c,h}`| Freestanding `memset`/`memcpy`/`strcmp`/…                    |
@@ -40,6 +42,8 @@ about         about PumpkinOS
 colors        show the 16-colour VGA palette
 uptime        time since boot (from the PIT tick counter)
 sleep <sec>   pause for <sec> seconds (uses timer_sleep)
+meminfo       print the BIOS E820 map + frame allocator stats
+memtest       allocate/free a few frames (exercises the allocator)
 reboot        restart the machine (via the 8042 controller)
 halt          stop the CPU
 ```
@@ -49,20 +53,22 @@ halt          stop the CPU
 ```
 BIOS  --loads sector 0 to 0x7C00-->  boot.asm (16-bit real mode)
   1. set up segments + stack, save boot drive
-  2. read the kernel from the floppy into memory at 0x1000  (LBA -> CHS, with retries)
-  3. enable the A20 line
-  4. load the GDT, set CR0.PE, far-jump into 32-bit protected mode
-  5. jump to 0x1000
+  2. gather the BIOS memory map (INT 15h/E820) into 0x0500  (real mode only!)
+  3. read the kernel from the floppy into memory at 0x1000  (LBA -> CHS, with retries)
+  4. enable the A20 line
+  5. load the GDT, set CR0.PE, far-jump into 32-bit protected mode
+  6. jump to 0x1000
                        |
                        v
 entry.asm (32-bit): zero .bss, set stack --> kernel_main() in kernel.c
   1. console_init()  -- VGA + serial
-  2. idt_init()      -- interrupt descriptor table + exception handler
-  3. pic_remap()     -- 8259 PIC: IRQs -> vectors 32..47
-  4. timer_init(100) -- PIT on IRQ0, 100 Hz system tick
-  5. keyboard_init() -- drain the 8042, unmask IRQ1
-  6. sti             -- enable interrupts
-  7. shell_run()     -- PumpkinShell REPL (reads keys via IRQ1, never returns)
+  2. pmm_init()      -- parse the E820 map, build the frame bitmap
+  3. idt_init()      -- interrupt descriptor table + exception handler
+  4. pic_remap()     -- 8259 PIC: IRQs -> vectors 32..47
+  5. timer_init(100) -- PIT on IRQ0, 100 Hz system tick
+  6. keyboard_init() -- drain the 8042, unmask IRQ1
+  7. sti             -- enable interrupts
+  8. shell_run()     -- PumpkinShell REPL (reads keys via IRQ1, never returns)
 ```
 
 ## Interrupts & the keyboard
@@ -78,15 +84,30 @@ shift/caps handling), and pushes the character into a ring buffer. The shell's
 `keyboard_getchar()` sleeps on `hlt` until a key arrives, so the CPU idles
 between keystrokes instead of busy-waiting.
 
+## Physical memory
+
+BIOS calls only work in real mode, so the bootloader queries the memory map
+(`INT 15h`, `EAX=0xE820`) *before* switching to protected mode and leaves the
+entry count + array at `0x0500`. In the kernel, `pmm_init()` reads that map and
+builds a **bitmap frame allocator**: one bit per 4 KiB physical frame, sized to
+the highest usable address. It marks everything used, frees the usable E820
+regions, then re-reserves the first 1 MiB (BIOS/kernel/video) and the bitmap's
+own storage. `pmm_alloc_frame()` / `pmm_free_frame()` hand out and reclaim
+frames; `meminfo` prints the map and stats. All arithmetic is 32-bit / shift
+based on purpose — the kernel links without libgcc, so there is no `__udivdi3`
+for 64-bit division.
+
 ## Memory layout (physical)
 
 ```
 0x00000000  Real-mode IVT / BIOS data area
+0x00000500  BIOS E820 memory map (count + entries, from the bootloader)
 0x00001000  Kernel image (loaded here, grows upward)
    ...      (kernel load budget ends at 0x7000 -- see MAX_KERNEL_SECTORS)
 0x00007C00  Boot sector (running) + stack growing down from here
 0x00090000  Protected-mode kernel stack top
 0x000B8000  VGA text framebuffer (80x25)
+0x00100000  Physical-memory-manager bitmap, then free frames
 ```
 
 The build measures the kernel and tells the boot sector *exactly* how many
@@ -116,8 +137,12 @@ hardware. The image is a standard 1.44 MB raw floppy.)
 ## Notes / next steps
 
 - Done so far: protected mode, IDT + exception handler, PIC remap, PIT timer,
-  PS/2 keyboard, and the shell. Natural next steps: a simple physical memory
-  manager (over a BIOS E820 map), then paging, then multitasking on the timer.
+  PS/2 keyboard, physical memory manager, and the shell. Natural next steps:
+  **paging** (page directory/tables + `CR0.PG`) built on top of the frame
+  allocator, then a kernel heap (`kmalloc`), then multitasking on the timer.
+- The bootloader gathers the memory map with `INT 15h/E820`, which every PC
+  BIOS since ~1994 supports; genuinely ancient machines without it would need
+  an `E801`/`AH=88h` fallback added to `do_e820`.
 - Compiled with `-march=i386` so it should run on genuine 386/486-era hardware.
 - COM1 serial output (38400 8N1) mirrors the console, which makes debugging on
   real hardware or headless QEMU much easier.
