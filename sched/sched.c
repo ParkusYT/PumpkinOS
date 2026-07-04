@@ -13,6 +13,7 @@
  * ========================================================================= */
 #include "sched.h"
 #include "kheap.h"
+#include "gdt.h"
 #include <stdint.h>
 
 #define STACK_SIZE 8192
@@ -47,6 +48,7 @@ void sched_init(void) {
     t->entry   = 0;
     t->arg     = 0;
     t->stack   = 0;                 /* runs on the boot stack */
+    t->kstack_top = 0x90000;        /* the boot stack top set up in entry.asm */
     t->counter = 0;
     t->next    = t;                 /* a ring of one */
     current    = t;
@@ -63,6 +65,7 @@ task_t *task_spawn(void (*entry)(void *), void *arg, const char *name) {
     t->entry   = entry;
     t->arg     = arg;
     t->stack   = stack;
+    t->kstack_top = (uint32_t)(stack + STACK_SIZE);
     t->counter = 0;
 
     /* Craft an initial stack matching what context_switch pops:
@@ -93,26 +96,29 @@ static task_t *pick_next(void) {
     return t;
 }
 
+/* Switch to 'next', updating the TSS so that if 'next' is (or becomes) a
+ * ring-3 task, its next trap lands on its own kernel stack. */
+static void switch_to(task_t *next) {
+    task_t *prev = current;
+    current = next;
+    tss_set_esp0(next->kstack_top);
+    context_switch(&prev->esp, next->esp);
+}
+
 /* Preemptive entry point: called from the timer IRQ with interrupts disabled. */
 void sched_tick(void) {
     if (current == 0)
         return;
     task_t *next = pick_next();
-    if (next == current)
-        return;
-    task_t *prev = current;
-    current = next;
-    context_switch(&prev->esp, next->esp);
+    if (next != current)
+        switch_to(next);
 }
 
 void task_yield(void) {
     uint32_t flags = irq_save();
     task_t  *next  = pick_next();
-    if (next != current) {
-        task_t *prev = current;
-        current = next;
-        context_switch(&prev->esp, next->esp);
-    }
+    if (next != current)
+        switch_to(next);
     irq_restore(flags);
 }
 
@@ -138,6 +144,7 @@ void task_exit(void) {
      * a reaper would free them from another task's context.) */
     task_t *dead = current;
     current = current->next;
+    tss_set_esp0(current->kstack_top);
     context_switch(&dead->esp, current->esp);
     /* not reached */
 }

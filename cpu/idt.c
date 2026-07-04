@@ -9,6 +9,7 @@
 #include "timer.h"
 #include "paging.h"
 #include "sched.h"
+#include "syscall.h"
 #include <stdint.h>
 
 /* A single 32-bit IDT gate descriptor. */
@@ -48,6 +49,8 @@ extern void irq9(void);  extern void irq10(void); extern void irq11(void);
 extern void irq12(void); extern void irq13(void); extern void irq14(void);
 extern void irq15(void);
 
+extern void isr128(void);   /* the int 0x80 syscall stub */
+
 static void (*const isr_stubs[32])(void) = {
     isr0,  isr1,  isr2,  isr3,  isr4,  isr5,  isr6,  isr7,
     isr8,  isr9,  isr10, isr11, isr12, isr13, isr14, isr15,
@@ -79,6 +82,7 @@ static const char *const exception_names[32] = {
 
 #define KERNEL_CS   0x08
 #define GATE_INT32  0x8E   /* present, ring 0, 32-bit interrupt gate */
+#define GATE_SYS32  0xEE   /* present, ring 3, 32-bit interrupt gate (syscalls) */
 
 static void idt_set_gate(int n, uint32_t handler, uint16_t sel, uint8_t flags) {
     idt[n].offset_low  = handler & 0xFFFF;
@@ -101,11 +105,20 @@ void idt_init(void) {
     for (int i = 0; i < 16; i++)
         idt_set_gate(32 + i, (uint32_t)irq_stubs[i], KERNEL_CS, GATE_INT32);
 
+    /* The syscall gate needs DPL 3 so ring-3 code is allowed to invoke it. */
+    idt_set_gate(128, (uint32_t)isr128, KERNEL_CS, GATE_SYS32);
+
     __asm__ volatile("lidt %0" : : "m"(idtp));
 }
 
 /* ---- the actual dispatcher, called from isr.asm --------------------------- */
 void isr_handler(struct registers *r) {
+    if (r->int_no == 128) {
+        /* int 0x80: a system call from user (or kernel) code. */
+        syscall_dispatch(r);
+        return;
+    }
+
     if (r->int_no == 14) {
         /* Page fault gets a dedicated reporter that decodes CR2. */
         paging_fault(r);

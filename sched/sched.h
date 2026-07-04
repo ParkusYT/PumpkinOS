@@ -14,6 +14,7 @@ typedef struct task {
     void            (*entry)(void *);
     void             *arg;
     uint8_t          *stack;    /* kmalloc'd stack (NULL for the boot task) */
+    uint32_t          kstack_top; /* top of the kernel stack (loaded into TSS esp0) */
     volatile uint32_t counter;  /* per-task scratch counter (used by demos) */
     struct task      *next;     /* circular run queue */
 } task_t;

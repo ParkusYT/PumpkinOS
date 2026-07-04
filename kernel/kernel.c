@@ -7,6 +7,7 @@
  * hand control to PumpkinShell.
  * ========================================================================= */
 #include "console.h"
+#include "gdt.h"
 #include "pmm.h"
 #include "paging.h"
 #include "kheap.h"
@@ -23,6 +24,12 @@ void kernel_main(void) {
     shell_banner();
     console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
     console_write("\n  PumpkinOS kernel is alive!\n\n");
+
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  Loading GDT + TSS (ring 0/3) ....... ... ");
+    gdt_init();
+    console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+    console_write("ok\n");
 
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     console_write("  Scanning physical memory (E820) .... ... ");

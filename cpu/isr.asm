@@ -88,6 +88,13 @@ IRQ 13, 45
 IRQ 14, 46
 IRQ 15, 47
 
+; The syscall gate: int 0x80 from ring 3 funnels through the same common stub.
+global isr128
+isr128:
+    push dword 0
+    push dword 128
+    jmp isr_common
+
 ; -----------------------------------------------------------------------------
 ; Common landing pad: save state, call C, restore state, iret.
 ; -----------------------------------------------------------------------------

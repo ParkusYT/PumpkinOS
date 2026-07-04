@@ -14,8 +14,17 @@
 #include "paging.h"
 #include "kheap.h"
 #include "sched.h"
+#include "gdt.h"
 #include "string.h"
 #include "io.h"
+
+/* ring-3 entry helper (cpu/usermode.asm) and the user blobs (user/user.asm) */
+extern void enter_user_mode(uint32_t entry, uint32_t user_esp);
+extern char user_program_start[], user_program_end[];
+extern char user_fault_start[],   user_fault_end[];
+
+#define UCODE_VADDR  0x40000000u   /* where the user program is mapped   */
+#define USTACK_VADDR 0x40008000u   /* one page of user stack             */
 
 #define PROMPT      "pksh> "
 #define LINE_MAX    128
@@ -66,6 +75,8 @@ static void cmd_help(void) {
     console_write("  heap          show kernel heap statistics\n");
     console_write("  htest         exercise kmalloc/kfree\n");
     console_write("  tasks         list scheduler tasks and their counters\n");
+    console_write("  user          run a program in ring 3 via syscalls\n");
+    console_write("  userfault     ring-3 task touches kernel memory (halts - demo)\n");
     console_write("  reboot        restart the machine\n");
     console_write("  halt          stop the CPU\n");
 }
@@ -335,6 +346,41 @@ static void cmd_tasks(void) {
     console_write(" tasks; run 'tasks' again - worker counters should climb)\n");
 }
 
+/* Runs as a kernel thread: maps a user code+stack page, copies a ring-3 blob
+ * in, points the TSS at this task's kernel stack, and drops to ring 3. It does
+ * not return - the blob exits (or faults) via a syscall. arg selects the blob:
+ * 0 = the clean demo, 1 = the read-kernel-memory fault demo. */
+static void user_task_entry(void *arg) {
+    char *start = ((uint32_t)arg == 1) ? user_fault_start   : user_program_start;
+    char *end   = ((uint32_t)arg == 1) ? user_fault_end     : user_program_end;
+
+    uint32_t code = pmm_alloc_frame();
+    uint32_t stk  = pmm_alloc_frame();
+    if (code == 0 || stk == 0) {
+        console_write("user: out of memory\n");
+        return;
+    }
+    paging_map(UCODE_VADDR,  code, PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+    paging_map(USTACK_VADDR, stk,  PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
+
+    memcpy((void *)UCODE_VADDR, start, (uint32_t)(end - start));
+
+    /* Traps from ring 3 must land on this task's own kernel stack. */
+    tss_set_esp0(sched_current()->kstack_top);
+
+    enter_user_mode(UCODE_VADDR, USTACK_VADDR + 4096);  /* never returns */
+}
+
+static void cmd_user(void) {
+    console_write("[pksh] spawning a ring-3 task; watch for its [ring3] line...\n");
+    task_spawn(user_task_entry, (void *)0, "user");
+}
+
+static void cmd_userfault(void) {
+    console_write("[pksh] ring-3 task will read kernel memory (expect a fault)...\n");
+    task_spawn(user_task_entry, (void *)1, "userflt");
+}
+
 static void cmd_reboot(void) {
     console_write("Rebooting...\n");
     /* Pulse the CPU reset line via the 8042 keyboard controller. */
@@ -412,6 +458,10 @@ static void shell_execute(char *line) {
         cmd_htest();
     else if (strcmp(cmd, "tasks") == 0)
         cmd_tasks();
+    else if (strcmp(cmd, "user") == 0)
+        cmd_user();
+    else if (strcmp(cmd, "userfault") == 0)
+        cmd_userfault();
     else if (strcmp(cmd, "reboot") == 0)
         cmd_reboot();
     else if (strcmp(cmd, "halt") == 0)

@@ -11,7 +11,8 @@ PIC, a PIT timer (system tick), an interrupt-driven PS/2 keyboard driver, a
 physical memory manager (bitmap frame allocator over the BIOS E820 map),
 paging (identity-mapped, with a `map`/`unmap` API), a kernel heap
 (`kmalloc`/`kfree`), preemptive multitasking (round-robin kernel threads
-switched on the timer tick), and **PumpkinShell (PKSH)**.
+switched on the timer tick), user mode (ring 3 with a TSS and an `int 0x80`
+syscall interface), and **PumpkinShell (PKSH)**.
 
 ## What's here
 
@@ -23,9 +24,12 @@ under these directories (with each on the `-I` header path).
 | `boot/boot.asm`         | 512-byte BIOS boot sector: gathers the E820 map, loads the kernel (INT 13h), enables A20, sets up a flat GDT, enters 32-bit protected mode. |
 | `kernel/entry.asm`      | 32-bit entry stub: zeroes `.bss`, sets up the stack, calls `kernel_main`. |
 | `kernel/kernel.c`       | Kernel entry: brings every subsystem up in order, then runs the shell. |
-| `cpu/idt.{c,h}`         | Builds/loads the IDT; dispatches exceptions and IRQs.      |
-| `cpu/isr.asm`           | Interrupt stubs for CPU exceptions 0–31 and IRQs 0–15.     |
+| `cpu/gdt.{c,h}`         | Kernel GDT (ring 0/3 segments) + TSS for ring-3 → ring-0 traps. |
+| `cpu/idt.{c,h}`         | Builds/loads the IDT; dispatches exceptions, IRQs, syscalls. |
+| `cpu/isr.asm`           | Interrupt stubs for exceptions 0–31, IRQs 0–15, `int 0x80`. |
 | `cpu/pic.{c,h}`         | Remaps the 8259 PIC (IRQs → vectors 32–47) and sends EOIs. |
+| `cpu/syscall.{c,h}`     | System-call dispatch (exit/putc/write/getcpl).            |
+| `cpu/usermode.asm`      | `enter_user_mode` - iret down to ring 3.                   |
 | `cpu/io.h`              | `inb`/`outb`/`io_wait` port helpers.                       |
 | `mm/pmm.{c,h}`          | Physical memory manager: bitmap allocator over the E820 map. |
 | `mm/paging.{c,h}`       | 32-bit paging: identity map, `paging_map`/`unmap`, page-fault reporter. |
@@ -36,6 +40,7 @@ under these directories (with each on the `-I` header path).
 | `sched/sched.{c,h}`     | Round-robin scheduler: kernel threads, `task_spawn`, preemption. |
 | `sched/switch.asm`      | `context_switch` - saves/restores registers and swaps stacks. |
 | `shell/shell.{c,h}`     | PumpkinShell (PKSH): the interactive command loop.         |
+| `user/user.asm`         | Position-independent ring-3 demo programs (run via syscalls). |
 | `lib/string.{c,h}`      | Freestanding `memset`/`memcpy`/`strcmp`/…                  |
 | `linker.ld`             | Links the kernel as a flat binary at physical address `0x1000`. |
 | `Makefile`           | Builds everything into `pumpkinos.img`.                      |
@@ -58,6 +63,8 @@ pgfault       deliberately touch unmapped memory (shows the fault handler; halts
 heap          show kernel heap statistics
 htest         exercise kmalloc/kfree (alloc, write/read, free, reuse)
 tasks         list scheduler tasks + counters (run twice: workers climb)
+user          drop to ring 3 and run a program that talks via int 0x80
+userfault     ring-3 task reads kernel memory -> protection fault (halts)
 reboot        restart the machine (via the 8042 controller)
 halt          stop the CPU
 ```
@@ -76,16 +83,17 @@ BIOS  --loads sector 0 to 0x7C00-->  boot.asm (16-bit real mode)
                        v
 entry.asm (32-bit): zero .bss, set stack --> kernel_main() in kernel.c
   1. console_init()  -- VGA + serial
-  2. pmm_init()      -- parse the E820 map, build the frame bitmap
-  3. idt_init()      -- interrupt descriptor table + exception handler
-  4. pic_remap()     -- 8259 PIC: IRQs -> vectors 32..47
-  5. timer_init(100) -- PIT on IRQ0, 100 Hz system tick
-  6. keyboard_init() -- drain the 8042, unmask IRQ1
-  7. paging_init()   -- identity-map RAM, load CR3, set CR0.PG
-  8. kheap_init()    -- reserve the heap's virtual region at 3 GiB
-  9. sched_init()    -- turn this boot context into task 0, spawn demo threads
- 10. sti             -- enable interrupts (preemption starts)
- 11. shell_run()     -- PumpkinShell REPL (task 0; reads keys via IRQ1)
+  2. gdt_init()      -- kernel GDT with ring 0/3 segments + TSS
+  3. pmm_init()      -- parse the E820 map, build the frame bitmap
+  4. idt_init()      -- IDT: exception, IRQ and int 0x80 (syscall) gates
+  5. pic_remap()     -- 8259 PIC: IRQs -> vectors 32..47
+  6. timer_init(100) -- PIT on IRQ0, 100 Hz system tick
+  7. keyboard_init() -- drain the 8042, unmask IRQ1
+  8. paging_init()   -- identity-map RAM, load CR3, set CR0.PG
+  9. kheap_init()    -- reserve the heap's virtual region at 3 GiB
+ 10. sched_init()    -- turn this boot context into task 0, spawn demo threads
+ 11. sti             -- enable interrupts (preemption starts)
+ 12. shell_run()     -- PumpkinShell REPL (task 0; reads keys via IRQ1)
 ```
 
 ## Interrupts & the keyboard
@@ -159,6 +167,27 @@ and never yield, so `tasks` showing their counters climb between runs is direct
 proof that the timer is preempting them - all while the shell (task 0) stays
 responsive.
 
+## User mode (ring 3)
+
+`gdt_init()` installs a kernel-owned GDT with ring-3 code/data descriptors and
+a **TSS**. The `user` command spawns a kernel thread that allocates a user
+code + stack page (mapped `USER`, at `0x40000000`), copies in a
+position-independent ring-3 blob (`user/user.asm`), points `tss.esp0` at its
+own kernel stack, and `enter_user_mode()` builds an `iret` frame to drop to
+CPL 3.
+
+From there the program can only reach the kernel through `int 0x80`: the number
+goes in `EAX`, args in `EBX`/`ECX`, the result comes back in `EAX`. The demo
+prints a message with `SYS_PUTC`, asks `SYS_GETCPL` (the kernel returns the low
+2 bits of the caller's saved CS), prints the digit - a literal **3** proving it
+runs at ring 3 - then `SYS_EXIT`s. On every context switch the scheduler
+updates `tss.esp0` to the incoming task's kernel stack, so a ring-3 task can be
+preempted and resumed safely.
+
+Protection is real: the identity map is supervisor-only, so `userfault` (a
+ring-3 read of a kernel page) takes a page fault - *protection violation, on
+read, user mode* - rather than being allowed.
+
 ## Memory layout (physical)
 
 ```
@@ -170,6 +199,7 @@ responsive.
 0x00090000  Protected-mode kernel stack top
 0x000B8000  VGA text framebuffer (80x25)
 0x00100000  Physical-memory-manager bitmap, then free frames
+0x40000000  User-mode code + stack pages (ring 3, mapped USER)
 0xC0000000  Kernel heap (virtual; frames mapped in on demand)
 ```
 
@@ -201,11 +231,13 @@ hardware. The image is a standard 1.44 MB raw floppy.)
 
 - Done so far: protected mode, IDT + exception/page-fault handlers, PIC remap,
   PIT timer, PS/2 keyboard, physical memory manager, paging, a kernel heap,
-  preemptive multitasking, and the shell. Natural next steps: **user mode**
-  (ring 3 via a TSS + `iret`) with **syscalls** (an `int 0x80` gate), then a
-  simple **filesystem** so the shell can load and run real programs off disk.
-- A dead task currently leaks its stack/TCB (no reaper yet), and there is one
-  address space shared by all kernel threads - both fine until user mode.
+  preemptive multitasking, ring-3 user mode + syscalls, and the shell. Natural
+  next steps: a **FAT12 filesystem** so the shell can list/read files off the
+  boot floppy, then an **ELF loader** so `int 0x80` programs can be loaded and
+  run from disk instead of being baked into the kernel.
+- Known simplifications: dead tasks leak their stack/TCB (no reaper), all tasks
+  share one address space (no per-process page directory), and user pages are
+  not freed on exit. All fine for the current demos.
 - The bootloader gathers the memory map with `INT 15h/E820`, which every PC
   BIOS since ~1994 supports; genuinely ancient machines without it would need
   an `E801`/`AH=88h` fallback added to `do_e820`.
