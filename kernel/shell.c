@@ -12,6 +12,7 @@
 #include "timer.h"
 #include "pmm.h"
 #include "paging.h"
+#include "kheap.h"
 #include "string.h"
 #include "io.h"
 
@@ -45,6 +46,8 @@ static void cmd_help(void) {
     console_write("  memtest       allocate/free some frames\n");
     console_write("  pgtest        map a frame and prove the translation\n");
     console_write("  pgfault       trigger a page fault (halts - demo)\n");
+    console_write("  heap          show kernel heap statistics\n");
+    console_write("  htest         exercise kmalloc/kfree\n");
     console_write("  reboot        restart the machine\n");
     console_write("  halt          stop the CPU\n");
 }
@@ -232,6 +235,56 @@ static void cmd_pgfault(void) {
     console_putc('\n');
 }
 
+static void cmd_heap(void) {
+    kheap_report();
+}
+
+/* Exercise the allocator: allocate blocks, prove the memory is real by writing
+ * and reading a pattern, then free one and show the space gets reused. */
+static void cmd_htest(void) {
+    console_write("initial heap:\n");
+    kheap_report();
+
+    void *a = kmalloc(100);
+    void *b = kmalloc(2000);
+    void *c = kmalloc(50);
+    console_write("  kmalloc(100)  -> ");
+    console_write_hex((uint32_t)a);
+    console_write("\n  kmalloc(2000) -> ");
+    console_write_hex((uint32_t)b);
+    console_write("\n  kmalloc(50)   -> ");
+    console_write_hex((uint32_t)c);
+    console_putc('\n');
+
+    /* Write a pattern through 'a' and read it back - proves the pages are
+     * really mapped and writable. */
+    uint32_t *arr = (uint32_t *)a;
+    int ok = 1;
+    for (int i = 0; i < 25; i++)
+        arr[i] = (uint32_t)(i * 2654435761u);
+    for (int i = 0; i < 25; i++)
+        if (arr[i] != (uint32_t)(i * 2654435761u))
+            ok = 0;
+    console_write("  write/read pattern: ");
+    console_write(ok ? "OK\n" : "FAILED\n");
+
+    console_write("after 3 allocs:\n");
+    kheap_report();
+
+    kfree(b);
+    console_write("freed the 2000-byte block; reallocating 1000...\n");
+    void *d = kmalloc(1000);
+    console_write("  kmalloc(1000) -> ");
+    console_write_hex((uint32_t)d);
+    console_write((d == b) ? "  (reused the freed block)\n" : "\n");
+
+    kfree(a);
+    kfree(c);
+    kfree(d);
+    console_write("after freeing everything:\n");
+    kheap_report();
+}
+
 static void cmd_reboot(void) {
     console_write("Rebooting...\n");
     /* Pulse the CPU reset line via the 8042 keyboard controller. */
@@ -303,6 +356,10 @@ static void shell_execute(char *line) {
         cmd_pgtest();
     else if (strcmp(cmd, "pgfault") == 0)
         cmd_pgfault();
+    else if (strcmp(cmd, "heap") == 0)
+        cmd_heap();
+    else if (strcmp(cmd, "htest") == 0)
+        cmd_htest();
     else if (strcmp(cmd, "reboot") == 0)
         cmd_reboot();
     else if (strcmp(cmd, "halt") == 0)

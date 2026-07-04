@@ -9,6 +9,7 @@
 #include "console.h"
 #include "pmm.h"
 #include "paging.h"
+#include "kheap.h"
 #include "idt.h"
 #include "pic.h"
 #include "timer.h"
@@ -59,6 +60,12 @@ void kernel_main(void) {
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     console_write("  Enabling paging (identity map) ..... ... ");
     paging_init();
+    console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+    console_write("ok\n");
+
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  Initialising kernel heap ........... ... ");
+    kheap_init();
     console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
     console_write("ok\n");
 

@@ -9,8 +9,8 @@ It currently has: a two-stage-ish boot into protected mode, an interrupt
 descriptor table with CPU-exception and page-fault handlers, a remapped 8259
 PIC, a PIT timer (system tick), an interrupt-driven PS/2 keyboard driver, a
 physical memory manager (bitmap frame allocator over the BIOS E820 map),
-paging (identity-mapped, with a `map`/`unmap` API), and
-**PumpkinShell (PSH)**.
+paging (identity-mapped, with a `map`/`unmap` API), a kernel heap
+(`kmalloc`/`kfree`), and **PumpkinShell (PSH)**.
 
 ## What's here
 
@@ -26,6 +26,7 @@ paging (identity-mapped, with a `map`/`unmap` API), and
 | `kernel/timer.{c,h}` | PIT (8254) on IRQ0: 100 Hz system tick, uptime, `timer_sleep`. |
 | `kernel/pmm.{c,h}`   | Physical memory manager: bitmap allocator over the E820 map. |
 | `kernel/paging.{c,h}`| 32-bit paging: identity map, `paging_map`/`unmap`, page-fault reporter. |
+| `kernel/kheap.{c,h}` | Kernel heap: first-fit `kmalloc`/`kfree` over paged frames. |
 | `kernel/keyboard.{c,h}` | PS/2 keyboard driver: IRQ1, scancode set 1, shift/caps, ring buffer. |
 | `kernel/shell.{c,h}` | PumpkinShell (PSH): the interactive command loop.            |
 | `kernel/string.{c,h}`| Freestanding `memset`/`memcpy`/`strcmp`/…                    |
@@ -48,6 +49,8 @@ meminfo       print the BIOS E820 map + frame allocator stats
 memtest       allocate/free a few frames (exercises the allocator)
 pgtest        map a frame to a high virtual address and prove the translation
 pgfault       deliberately touch unmapped memory (shows the fault handler; halts)
+heap          show kernel heap statistics
+htest         exercise kmalloc/kfree (alloc, write/read, free, reuse)
 reboot        restart the machine (via the 8042 controller)
 halt          stop the CPU
 ```
@@ -72,8 +75,9 @@ entry.asm (32-bit): zero .bss, set stack --> kernel_main() in kernel.c
   5. timer_init(100) -- PIT on IRQ0, 100 Hz system tick
   6. keyboard_init() -- drain the 8042, unmask IRQ1
   7. paging_init()   -- identity-map RAM, load CR3, set CR0.PG
-  8. sti             -- enable interrupts
-  9. shell_run()     -- PumpkinShell REPL (reads keys via IRQ1, never returns)
+  8. kheap_init()    -- reserve the heap's virtual region at 3 GiB
+  9. sti             -- enable interrupts
+ 10. shell_run()     -- PumpkinShell REPL (reads keys via IRQ1, never returns)
 ```
 
 ## Interrupts & the keyboard
@@ -118,6 +122,17 @@ Vector 14 (page fault) is routed to `paging_fault()`, which decodes CR2 and the
 error code before halting. The `pgtest` and `pgfault` shell commands exercise
 both paths.
 
+## Kernel heap
+
+`kmalloc`/`kfree` run a **first-fit free-list allocator** over a virtual region
+at `0xC0000000` (3 GiB) — deliberately above the identity map, so every heap
+page is a physical frame pulled from the PMM and mapped in on demand via
+`paging_map`. When the heap runs low it grows by mapping more frames onto its
+tail. Blocks carry a 16-byte header (payloads are 8-byte aligned); `kmalloc`
+splits an oversized free block, and `kfree` marks a block free and coalesces
+adjacent free neighbours. `htest` allocates, writes/reads a pattern (proving the
+pages are real), frees, and shows the freed space getting reused.
+
 ## Memory layout (physical)
 
 ```
@@ -129,6 +144,7 @@ both paths.
 0x00090000  Protected-mode kernel stack top
 0x000B8000  VGA text framebuffer (80x25)
 0x00100000  Physical-memory-manager bitmap, then free frames
+0xC0000000  Kernel heap (virtual; frames mapped in on demand)
 ```
 
 The build measures the kernel and tells the boot sector *exactly* how many
@@ -158,9 +174,10 @@ hardware. The image is a standard 1.44 MB raw floppy.)
 ## Notes / next steps
 
 - Done so far: protected mode, IDT + exception/page-fault handlers, PIC remap,
-  PIT timer, PS/2 keyboard, physical memory manager, paging, and the shell.
-  Natural next steps: a **kernel heap** (`kmalloc`/`kfree` over paged frames),
-  then multitasking on the timer tick, then user mode (ring 3) + syscalls.
+  PIT timer, PS/2 keyboard, physical memory manager, paging, a kernel heap, and
+  the shell. Natural next steps: **multitasking** (a task struct + context
+  switch on the timer tick), then user mode (ring 3) + syscalls, then a simple
+  filesystem so the shell can load programs.
 - The bootloader gathers the memory map with `INT 15h/E820`, which every PC
   BIOS since ~1994 supports; genuinely ancient machines without it would need
   an `E801`/`AH=88h` fallback added to `do_e820`.
