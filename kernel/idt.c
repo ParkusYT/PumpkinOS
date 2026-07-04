@@ -8,6 +8,7 @@
 #include "keyboard.h"
 #include "timer.h"
 #include "paging.h"
+#include "sched.h"
 #include <stdint.h>
 
 /* A single 32-bit IDT gate descriptor. */
@@ -129,9 +130,13 @@ void isr_handler(struct registers *r) {
 
     /* Otherwise it is a hardware IRQ (vectors 32..47). */
     int irq = r->int_no - 32;
-    if (irq == 0)
+    if (irq == 0) {
         timer_irq();
-    else if (irq == 1)
+        pic_send_eoi(irq);      /* ack before we possibly switch tasks */
+        sched_tick();           /* preempt: may not return to here for a while */
+        return;
+    }
+    if (irq == 1)
         keyboard_irq();
 
     pic_send_eoi(irq);

@@ -10,7 +10,8 @@ descriptor table with CPU-exception and page-fault handlers, a remapped 8259
 PIC, a PIT timer (system tick), an interrupt-driven PS/2 keyboard driver, a
 physical memory manager (bitmap frame allocator over the BIOS E820 map),
 paging (identity-mapped, with a `map`/`unmap` API), a kernel heap
-(`kmalloc`/`kfree`), and **PumpkinShell (PSH)**.
+(`kmalloc`/`kfree`), preemptive multitasking (round-robin kernel threads
+switched on the timer tick), and **PumpkinShell (PSH)**.
 
 ## What's here
 
@@ -27,6 +28,8 @@ paging (identity-mapped, with a `map`/`unmap` API), a kernel heap
 | `kernel/pmm.{c,h}`   | Physical memory manager: bitmap allocator over the E820 map. |
 | `kernel/paging.{c,h}`| 32-bit paging: identity map, `paging_map`/`unmap`, page-fault reporter. |
 | `kernel/kheap.{c,h}` | Kernel heap: first-fit `kmalloc`/`kfree` over paged frames. |
+| `kernel/sched.{c,h}` | Round-robin scheduler: kernel threads, `task_spawn`, preemption. |
+| `kernel/switch.asm`  | `context_switch` - saves/restores registers and swaps stacks. |
 | `kernel/keyboard.{c,h}` | PS/2 keyboard driver: IRQ1, scancode set 1, shift/caps, ring buffer. |
 | `kernel/shell.{c,h}` | PumpkinShell (PSH): the interactive command loop.            |
 | `kernel/string.{c,h}`| Freestanding `memset`/`memcpy`/`strcmp`/…                    |
@@ -51,6 +54,7 @@ pgtest        map a frame to a high virtual address and prove the translation
 pgfault       deliberately touch unmapped memory (shows the fault handler; halts)
 heap          show kernel heap statistics
 htest         exercise kmalloc/kfree (alloc, write/read, free, reuse)
+tasks         list scheduler tasks + counters (run twice: workers climb)
 reboot        restart the machine (via the 8042 controller)
 halt          stop the CPU
 ```
@@ -76,8 +80,9 @@ entry.asm (32-bit): zero .bss, set stack --> kernel_main() in kernel.c
   6. keyboard_init() -- drain the 8042, unmask IRQ1
   7. paging_init()   -- identity-map RAM, load CR3, set CR0.PG
   8. kheap_init()    -- reserve the heap's virtual region at 3 GiB
-  9. sti             -- enable interrupts
- 10. shell_run()     -- PumpkinShell REPL (reads keys via IRQ1, never returns)
+  9. sched_init()    -- turn this boot context into task 0, spawn demo threads
+ 10. sti             -- enable interrupts (preemption starts)
+ 11. shell_run()     -- PumpkinShell REPL (task 0; reads keys via IRQ1)
 ```
 
 ## Interrupts & the keyboard
@@ -133,6 +138,24 @@ splits an oversized free block, and `kfree` marks a block free and coalesces
 adjacent free neighbours. `htest` allocates, writes/reads a pattern (proving the
 pages are real), frees, and shows the freed space getting reused.
 
+## Multitasking
+
+The boot context becomes task 0 (which runs the shell). `task_spawn()` creates
+a kernel thread: it `kmalloc`s a stack and hand-crafts an initial frame so the
+first switch "returns" into a bootstrap that calls the thread's entry function.
+Tasks live in a circular run queue. On every timer tick, the IRQ0 handler
+(after acking the PIC) calls `sched_tick()`, which round-robins to the next
+task via `context_switch` (in `switch.asm`): it pushes the callee-saved
+registers + EFLAGS onto the outgoing task's stack, saves its ESP, loads the
+incoming task's ESP, and pops - so each task resumes exactly where it left off,
+on its own stack. Because the interrupt frame lives on the task's own stack,
+switching away mid-interrupt and back later Just Works.
+
+The two `worker-*` threads spawned at boot spin forever incrementing a counter
+and never yield, so `tasks` showing their counters climb between runs is direct
+proof that the timer is preempting them - all while the shell (task 0) stays
+responsive.
+
 ## Memory layout (physical)
 
 ```
@@ -174,10 +197,12 @@ hardware. The image is a standard 1.44 MB raw floppy.)
 ## Notes / next steps
 
 - Done so far: protected mode, IDT + exception/page-fault handlers, PIC remap,
-  PIT timer, PS/2 keyboard, physical memory manager, paging, a kernel heap, and
-  the shell. Natural next steps: **multitasking** (a task struct + context
-  switch on the timer tick), then user mode (ring 3) + syscalls, then a simple
-  filesystem so the shell can load programs.
+  PIT timer, PS/2 keyboard, physical memory manager, paging, a kernel heap,
+  preemptive multitasking, and the shell. Natural next steps: **user mode**
+  (ring 3 via a TSS + `iret`) with **syscalls** (an `int 0x80` gate), then a
+  simple **filesystem** so the shell can load and run real programs off disk.
+- A dead task currently leaks its stack/TCB (no reaper yet), and there is one
+  address space shared by all kernel threads - both fine until user mode.
 - The bootloader gathers the memory map with `INT 15h/E820`, which every PC
   BIOS since ~1994 supports; genuinely ancient machines without it would need
   an `E801`/`AH=88h` fallback added to `do_e820`.

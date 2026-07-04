@@ -13,11 +13,27 @@
 #include "pmm.h"
 #include "paging.h"
 #include "kheap.h"
+#include "sched.h"
 #include "string.h"
 #include "io.h"
 
 #define PROMPT      "psh> "
 #define LINE_MAX    128
+
+/* ---- background demo tasks ------------------------------------------------ */
+/* A worker just spins, bumping its own task counter. Because it never yields,
+ * the only way the other tasks (and the shell) keep running is the timer
+ * preempting it -- so a rising counter is proof of preemptive multitasking. */
+static void demo_worker(void *arg) {
+    (void)arg;
+    for (;;)
+        sched_current()->counter++;
+}
+
+void shell_spawn_demo_tasks(void) {
+    task_spawn(demo_worker, 0, "worker-a");
+    task_spawn(demo_worker, 0, "worker-b");
+}
 
 /* ---- the pumpkin banner (shared with the boot screen) --------------------- */
 void shell_banner(void) {
@@ -48,6 +64,7 @@ static void cmd_help(void) {
     console_write("  pgfault       trigger a page fault (halts - demo)\n");
     console_write("  heap          show kernel heap statistics\n");
     console_write("  htest         exercise kmalloc/kfree\n");
+    console_write("  tasks         list scheduler tasks and their counters\n");
     console_write("  reboot        restart the machine\n");
     console_write("  halt          stop the CPU\n");
 }
@@ -285,6 +302,38 @@ static void cmd_htest(void) {
     kheap_report();
 }
 
+/* Pad a string out to 'width' columns with trailing spaces. */
+static void print_padded(const char *s, int width) {
+    int n = 0;
+    while (s[n]) {
+        console_putc(s[n]);
+        n++;
+    }
+    while (n++ < width)
+        console_putc(' ');
+}
+
+static void cmd_tasks(void) {
+    console_write("  id  name        state  counter\n");
+    task_t *start = sched_current();
+    task_t *t = start;
+    do {
+        console_write("  ");
+        console_write_dec(t->id);
+        console_write("   ");
+        print_padded(t->name, 12);
+        print_padded(t->state == 0 ? "alive" : "dead", 7);
+        console_write_dec(t->counter);
+        if (t == start)
+            console_write("   <- shell");
+        console_putc('\n');
+        t = t->next;
+    } while (t != start);
+    console_write("  (");
+    console_write_dec(sched_count());
+    console_write(" tasks; run 'tasks' again - worker counters should climb)\n");
+}
+
 static void cmd_reboot(void) {
     console_write("Rebooting...\n");
     /* Pulse the CPU reset line via the 8042 keyboard controller. */
@@ -360,6 +409,8 @@ static void shell_execute(char *line) {
         cmd_heap();
     else if (strcmp(cmd, "htest") == 0)
         cmd_htest();
+    else if (strcmp(cmd, "tasks") == 0)
+        cmd_tasks();
     else if (strcmp(cmd, "reboot") == 0)
         cmd_reboot();
     else if (strcmp(cmd, "halt") == 0)

@@ -14,6 +14,7 @@
 #include "pic.h"
 #include "timer.h"
 #include "keyboard.h"
+#include "sched.h"
 #include "shell.h"
 
 void kernel_main(void) {
@@ -69,7 +70,14 @@ void kernel_main(void) {
     console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
     console_write("ok\n");
 
-    /* Everything is in place - turn on interrupts. */
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  Starting scheduler + demo tasks .... ... ");
+    sched_init();                 /* this boot context becomes task 0 */
+    shell_spawn_demo_tasks();     /* two background worker threads */
+    console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+    console_write("ok\n");
+
+    /* Everything is in place - turn on interrupts (preemption starts now). */
     __asm__ volatile("sti");
 
     console_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
