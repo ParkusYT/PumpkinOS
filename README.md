@@ -11,30 +11,33 @@ PIC, a PIT timer (system tick), an interrupt-driven PS/2 keyboard driver, a
 physical memory manager (bitmap frame allocator over the BIOS E820 map),
 paging (identity-mapped, with a `map`/`unmap` API), a kernel heap
 (`kmalloc`/`kfree`), preemptive multitasking (round-robin kernel threads
-switched on the timer tick), and **PumpkinShell (PSH)**.
+switched on the timer tick), and **PumpkinShell (PKSH)**.
 
 ## What's here
 
-| File                 | Role                                                          |
-|----------------------|--------------------------------------------------------------|
-| `boot/boot.asm`      | 512-byte BIOS boot sector: loads the kernel (INT 13h), enables A20, sets up a flat GDT, enters 32-bit protected mode, jumps to the kernel. |
-| `kernel/entry.asm`   | 32-bit entry stub: zeroes `.bss`, sets up the stack, calls `kernel_main`. |
-| `kernel/kernel.c`    | Kernel entry: brings up console, IDT, PIC, keyboard, then runs the shell. |
-| `kernel/console.{c,h}` | VGA text driver (colour, scrolling, hardware cursor) + COM1 serial mirror. |
-| `kernel/isr.asm`     | Interrupt stubs for CPU exceptions 0–31 and IRQs 0–15.       |
-| `kernel/idt.{c,h}`   | Builds/loads the IDT; dispatches exceptions and IRQs.        |
-| `kernel/pic.{c,h}`   | Remaps the 8259 PIC (IRQs → vectors 32–47) and sends EOIs.   |
-| `kernel/timer.{c,h}` | PIT (8254) on IRQ0: 100 Hz system tick, uptime, `timer_sleep`. |
-| `kernel/pmm.{c,h}`   | Physical memory manager: bitmap allocator over the E820 map. |
-| `kernel/paging.{c,h}`| 32-bit paging: identity map, `paging_map`/`unmap`, page-fault reporter. |
-| `kernel/kheap.{c,h}` | Kernel heap: first-fit `kmalloc`/`kfree` over paged frames. |
-| `kernel/sched.{c,h}` | Round-robin scheduler: kernel threads, `task_spawn`, preemption. |
-| `kernel/switch.asm`  | `context_switch` - saves/restores registers and swaps stacks. |
-| `kernel/keyboard.{c,h}` | PS/2 keyboard driver: IRQ1, scancode set 1, shift/caps, ring buffer. |
-| `kernel/shell.{c,h}` | PumpkinShell (PSH): the interactive command loop.            |
-| `kernel/string.{c,h}`| Freestanding `memset`/`memcpy`/`strcmp`/…                    |
-| `kernel/io.h`        | `inb`/`outb`/`io_wait` port helpers.                         |
-| `linker.ld`          | Links the kernel as a flat binary at physical address `0x1000`. |
+The source is organised by subsystem; the build compiles every `.c`/`.asm`
+under these directories (with each on the `-I` header path).
+
+| Path                    | Role                                                       |
+|-------------------------|------------------------------------------------------------|
+| `boot/boot.asm`         | 512-byte BIOS boot sector: gathers the E820 map, loads the kernel (INT 13h), enables A20, sets up a flat GDT, enters 32-bit protected mode. |
+| `kernel/entry.asm`      | 32-bit entry stub: zeroes `.bss`, sets up the stack, calls `kernel_main`. |
+| `kernel/kernel.c`       | Kernel entry: brings every subsystem up in order, then runs the shell. |
+| `cpu/idt.{c,h}`         | Builds/loads the IDT; dispatches exceptions and IRQs.      |
+| `cpu/isr.asm`           | Interrupt stubs for CPU exceptions 0–31 and IRQs 0–15.     |
+| `cpu/pic.{c,h}`         | Remaps the 8259 PIC (IRQs → vectors 32–47) and sends EOIs. |
+| `cpu/io.h`              | `inb`/`outb`/`io_wait` port helpers.                       |
+| `mm/pmm.{c,h}`          | Physical memory manager: bitmap allocator over the E820 map. |
+| `mm/paging.{c,h}`       | 32-bit paging: identity map, `paging_map`/`unmap`, page-fault reporter. |
+| `mm/kheap.{c,h}`        | Kernel heap: first-fit `kmalloc`/`kfree` over paged frames. |
+| `drivers/console.{c,h}` | VGA text driver (colour, scrolling, hardware cursor) + COM1 serial mirror. |
+| `drivers/timer.{c,h}`   | PIT (8254) on IRQ0: 100 Hz system tick, uptime, `timer_sleep`. |
+| `drivers/keyboard.{c,h}`| PS/2 keyboard driver: IRQ1, scancode set 1, shift/caps, ring buffer. |
+| `sched/sched.{c,h}`     | Round-robin scheduler: kernel threads, `task_spawn`, preemption. |
+| `sched/switch.asm`      | `context_switch` - saves/restores registers and swaps stacks. |
+| `shell/shell.{c,h}`     | PumpkinShell (PKSH): the interactive command loop.         |
+| `lib/string.{c,h}`      | Freestanding `memset`/`memcpy`/`strcmp`/…                  |
+| `linker.ld`             | Links the kernel as a flat binary at physical address `0x1000`. |
 | `Makefile`           | Builds everything into `pumpkinos.img`.                      |
 
 ## PumpkinShell commands

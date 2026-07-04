@@ -1,5 +1,5 @@
 /* ===========================================================================
- * PumpkinOS - PumpkinShell (PSH)
+ * PumpkinOS - PumpkinShell (PKSH)
  * ---------------------------------------------------------------------------
  * A tiny read-eval-print loop. It reads a line from the keyboard (with echo
  * and backspace editing), splits off the first word as the command, and runs
@@ -17,7 +17,7 @@
 #include "string.h"
 #include "io.h"
 
-#define PROMPT      "psh> "
+#define PROMPT      "pksh> "
 #define LINE_MAX    128
 
 /* ---- background demo tasks ------------------------------------------------ */
@@ -39,17 +39,18 @@ void shell_spawn_demo_tasks(void) {
 void shell_banner(void) {
     console_set_color(VGA_YELLOW, VGA_BLACK);
     console_write("\n");
-    console_write("   ____                   _    _        ___  ____\n");
-    console_write("  |  _ \\ _   _ _ __ ___  | | _(_)_ __  / _ \\/ ___|\n");
-    console_write("  | |_) | | | | '_ ` _ \\ | |/ / | '_ \\| | | \\___ \\\n");
-    console_write("  |  __/| |_| | | | | | ||   <| | | | | |_| |___) |\n");
-    console_write("  |_|    \\__,_|_| |_| |_||_|\\_\\_|_| |_|\\___/|____/\n");
+    console_write("   ____                       _    _         ___  ____  \n");
+    console_write("  |  _ \\ _   _ _ __ ___  _ __ | | _(_)_ __   / _ \\/ ___| \n");
+    console_write("  | |_) | | | | '_ ` _ \\| '_ \\| |/ / | '_ \\ | | | \\___ \\ \n");
+    console_write("  |  __/| |_| | | | | | | |_) |   <| | | | || |_| |___) |\n");
+    console_write("  |_|    \\__,_|_| |_| |_| .__/|_|\\_\\_|_| |_| \\___/|____/ \n");
+    console_write("                        |_|                              \n");
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
 }
 
 /* ---- built-in commands ---------------------------------------------------- */
 static void cmd_help(void) {
-    console_write("PumpkinShell (PSH) built-in commands:\n");
+    console_write("PumpkinShell (PKSH) built-in commands:\n");
     console_write("  help          show this help\n");
     console_write("  clear, cls    clear the screen\n");
     console_write("  echo <text>   print <text>\n");
@@ -74,7 +75,7 @@ static void cmd_about(void) {
     console_write("\n");
     console_write("  PumpkinOS - a 32-bit, BIOS-only hobby OS.\n");
     console_write("  Protected mode, VGA + serial console, PS/2 keyboard,\n");
-    console_write("  and this very shell: PumpkinShell (PSH).\n\n");
+    console_write("  and this very shell: PumpkinShell (PKSH).\n\n");
 }
 
 static void cmd_colors(void) {
@@ -417,7 +418,7 @@ static void shell_execute(char *line) {
         cmd_halt();
     else {
         console_set_color(VGA_LIGHT_RED, VGA_BLACK);
-        console_write("psh: command not found: ");
+        console_write("pksh: command not found: ");
         console_write(cmd);
         console_putc('\n');
         console_set_color(VGA_LIGHT_GREY, VGA_BLACK);

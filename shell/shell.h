@@ -1,5 +1,5 @@
 /* ===========================================================================
- * PumpkinOS - PumpkinShell (PSH)
+ * PumpkinOS - PumpkinShell (PKSH)
  * ========================================================================= */
 #ifndef PUMPKIN_SHELL_H
 #define PUMPKIN_SHELL_H

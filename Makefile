@@ -26,10 +26,18 @@ QEMU    := qemu-system-i386
 # fixed-width integer types.
 GCC_INC := $(shell $(CC) -print-file-name=include)
 
+# The kernel source is split across subsystem directories. Every one is added
+# to the header search path, so `#include "foo.h"` keeps working regardless of
+# which directory a file lives in, and VPATH lets the pattern rules find the
+# matching .c/.asm.
+SRC_DIRS := kernel cpu mm drivers sched lib shell
+VPATH    := $(SRC_DIRS)
+INCLUDES := $(addprefix -I,$(SRC_DIRS))
+
 # 32-bit, target the plain i386 (real "old machines"), no host runtime at all.
 CFLAGS := -m32 -march=i386 -ffreestanding -fno-pie -fno-pic \
           -fno-stack-protector -fno-builtin -nostdlib -nostdinc \
-          -isystem $(GCC_INC) \
+          -isystem $(GCC_INC) $(INCLUDES) \
           -Wall -Wextra -O2 -c
 
 LDFLAGS := -m elf_i386 -T linker.ld -nostdlib
@@ -41,15 +49,16 @@ IMG    := pumpkinos.img
 BOOT_SRC   := boot/boot.asm
 BOOT_BIN   := $(BUILD)/boot.bin
 
-# The kernel is built from every .asm and .c file under kernel/. entry.o must
-# link first (so _start lands at 0x1000), so it is pulled out of the wildcard
-# list and prepended explicitly.
+# Objects are flattened into build/ by basename (names are unique across dirs).
+# entry.o must link first (so _start lands at 0x1000), so it is pulled out of
+# the wildcard list and prepended explicitly.
 ENTRY_OBJ  := $(BUILD)/entry.o
-ASM_SRCS   := $(filter-out kernel/entry.asm,$(wildcard kernel/*.asm))
-ASM_OBJS   := $(patsubst kernel/%.asm,$(BUILD)/%.o,$(ASM_SRCS))
-C_SRCS     := $(wildcard kernel/*.c)
-C_OBJS     := $(patsubst kernel/%.c,$(BUILD)/%.o,$(C_SRCS))
+ASM_SRCS   := $(filter-out %/entry.asm,$(wildcard $(addsuffix /*.asm,$(SRC_DIRS))))
+ASM_OBJS   := $(patsubst %.asm,$(BUILD)/%.o,$(notdir $(ASM_SRCS)))
+C_SRCS     := $(wildcard $(addsuffix /*.c,$(SRC_DIRS)))
+C_OBJS     := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(C_SRCS)))
 KERNEL_OBJS := $(ENTRY_OBJ) $(ASM_OBJS) $(C_OBJS)
+HEADERS    := $(wildcard $(addsuffix /*.h,$(SRC_DIRS)))
 
 KERNEL_ELF := $(BUILD)/kernel.elf
 KERNEL_BIN := $(BUILD)/kernel.bin
@@ -75,17 +84,17 @@ $(BOOT_BIN): $(BOOT_SRC) $(KERNEL_BIN) | $(BUILD)
 	echo "Kernel occupies $$ksize / $(MAX_KERNEL_SECTORS) sectors; assembling boot sector to load $$ksize."; \
 	$(NASM) -f bin -DKSECTORS=$$ksize $< -o $@
 
-# ---- kernel: assemble any .asm (entry.asm, isr.asm, ...) --------------------
-$(BUILD)/%.o: kernel/%.asm | $(BUILD)
+# ---- kernel: assemble any .asm (found via VPATH across SRC_DIRS) ------------
+$(BUILD)/%.o: %.asm | $(BUILD)
 	$(NASM) -f elf32 $< -o $@
 
-# ---- kernel: compile any .c -------------------------------------------------
-$(BUILD)/%.o: kernel/%.c | $(BUILD)
+# ---- kernel: compile any .c (found via VPATH across SRC_DIRS) ---------------
+$(BUILD)/%.o: %.c | $(BUILD)
 	$(CC) $(CFLAGS) $< -o $@
 
 # Rebuild every C object if any header changes (simple + correct for a project
 # this size; avoids stale builds while hacking on the kernel).
-$(C_OBJS): $(wildcard kernel/*.h)
+$(C_OBJS): $(HEADERS)
 
 # ---- kernel: link (entry.o FIRST so _start lands at 0x1000) -----------------
 $(KERNEL_ELF): $(KERNEL_OBJS) linker.ld
