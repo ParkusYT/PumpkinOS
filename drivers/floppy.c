@@ -31,9 +31,10 @@
 #define HEADS 2
 
 /* ISA DMA bounce buffer: a fixed low physical address (< 16 MB, 64 KB-aligned
- * so a 512-byte transfer never crosses a 64 KB page). It is inside the first
- * MiB, which the PMM reserves and paging identity-maps. */
-#define DMA_BUFFER 0x00020000u
+ * so a 512-byte transfer never crosses a 64 KB page). It sits above the kernel
+ * (which loads at 0x10000 and grows up) and below the stack at 0x90000, inside
+ * the first MiB that the PMM reserves and paging identity-maps. */
+#define DMA_BUFFER 0x00080000u
 
 static volatile int irq_fired = 0;
 static int          motor_on  = 0;

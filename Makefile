@@ -68,10 +68,10 @@ KERNEL_BIN := $(BUILD)/kernel.bin
 FSROOT     := fsroot
 FS_FILES   := $(wildcard $(FSROOT)/*)
 
-# KERNEL.BIN is loaded at 0x1000 by the boot sector and must stay below the
-# boot sector at 0x7C00. 48 sectors leaves headroom for the FAT/root scratch
-# buffers the boot sector uses above 0x7C00.
-MAX_KERNEL_SECTORS := 48
+# KERNEL.BIN is loaded at 0x10000 by the boot sector and grows upward; it must
+# stay below the floppy DMA buffer at 0x80000 (and the stack at 0x90000). That
+# gives a 0x70000 = 448 KiB window; 512 sectors (256 KiB) leaves a wide margin.
+MAX_KERNEL_SECTORS := 512
 
 .PHONY: all run run-serial clean
 
@@ -102,7 +102,7 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 	$(OBJCOPY) -O binary $< $@
 	@ksize=$$(( ($$(wc -c < $@) + 511) / 512 )); \
 	if [ $$ksize -gt $(MAX_KERNEL_SECTORS) ]; then \
-	    echo "ERROR: KERNEL.BIN is $$ksize sectors but must fit in $(MAX_KERNEL_SECTORS) (it loads at 0x1000, below 0x7C00)."; \
+	    echo "ERROR: KERNEL.BIN is $$ksize sectors but must fit in $(MAX_KERNEL_SECTORS) (it loads at 0x10000, below the DMA buffer at 0x80000)."; \
 	    exit 1; \
 	fi; \
 	echo "KERNEL.BIN occupies $$ksize / $(MAX_KERNEL_SECTORS) sectors."

@@ -22,8 +22,8 @@ under these directories (with each on the `-I` header path).
 
 | Path                    | Role                                                       |
 |-------------------------|------------------------------------------------------------|
-| `boot/boot.asm`         | 512-byte FAT12 boot sector: carries a BPB, finds `KERNEL.BIN` in the root directory, follows its cluster chain to load it at 0x1000, jumps to it. |
-| `kernel/entry.asm`      | Kernel entry: 16-bit stub does E820 + A20 + GDT + switch to protected mode, then 32-bit part zeroes `.bss`, sets the stack, calls `kernel_main`. |
+| `boot/boot.asm`         | 512-byte FAT12 boot sector: carries a BPB, finds `KERNEL.BIN`, follows its cluster chain to load it at 0x10000, gathers the E820 map, enables A20, loads a GDT, enters protected mode, jumps to the kernel. |
+| `kernel/entry.asm`      | 32-bit kernel entry: zeroes `.bss`, sets up the stack, calls `kernel_main`. |
 | `kernel/kernel.c`       | Kernel entry: brings every subsystem up in order, then runs the shell. |
 | `cpu/gdt.{c,h}`         | Kernel GDT (ring 0/3 segments) + TSS for ring-3 → ring-0 traps. |
 | `cpu/idt.{c,h}`         | Builds/loads the IDT; dispatches exceptions, IRQs, syscalls. |
@@ -81,14 +81,10 @@ halt          stop the CPU
 BIOS  --loads sector 0 to 0x7C00-->  boot.asm (16-bit real mode, FAT12)
   1. set up segments + stack, save boot drive
   2. read the root directory, scan it for "KERNEL  BIN"
-  3. read the FAT, follow KERNEL.BIN's cluster chain, load it to 0x1000
-  4. jump to 0x1000 (still real mode)
-                       |
-                       v
-entry.asm (16-bit stub):
-  1. gather the BIOS memory map (INT 15h/E820) into 0x0500  (real mode only!)
-  2. enable the A20 line
-  3. load the GDT, set CR0.PE, far-jump into 32-bit protected mode
+  3. read the FAT, follow KERNEL.BIN's cluster chain, load it HIGH at 0x10000
+  4. gather the BIOS memory map (INT 15h/E820) into 0x0500  (real mode only!)
+  5. enable A20, load the GDT, set CR0.PE
+  6. far-jump into 32-bit protected mode at 0x10000
                        |
                        v
 entry.asm (32-bit): zero .bss, set stack --> kernel_main() in kernel.c
@@ -233,11 +229,10 @@ filesystem is read-only from inside PumpkinOS.)
 ```
 0x00000000  Real-mode IVT / BIOS data area
 0x00000500  BIOS E820 memory map (count + entries, from the bootloader)
-0x00001000  KERNEL.BIN (loaded here by the boot sector, grows upward)
-   ...      (kernel must stay below 0x7C00 -- see MAX_KERNEL_SECTORS)
 0x00007C00  Boot sector (running) + real-mode stack below it
 0x00007E00  Boot-time scratch: FAT (0x7E00) then root directory (0x9000)
-0x00020000  Floppy DMA bounce buffer (ISA DMA, < 16 MB, 64 KB-aligned)
+0x00010000  KERNEL.BIN (loaded here, grows upward; < 0x80000 -- MAX_KERNEL_SECTORS)
+0x00080000  Floppy DMA bounce buffer (ISA DMA, < 16 MB, 64 KB-aligned)
 0x00090000  Protected-mode kernel stack top
 0x000B8000  VGA text framebuffer (80x25)
 0x00100000  Physical-memory-manager bitmap, then free frames
@@ -281,9 +276,9 @@ hardware. The image is a standard 1.44 MB raw floppy.)
 - Known simplifications: the filesystem is read-only and the floppy driver only
   reads (no write, single drive); dead tasks leak their stack/TCB (no reaper);
   all tasks share one address space; user pages are not freed on exit.
-- `KERNEL.BIN` loads at 0x1000 and must stay below 0x7C00, so it is capped at
-  48 sectors (currently ~44). When it gets tight, the fix is a small
-  second-stage loader or a higher load address.
+- `KERNEL.BIN` loads at 0x10000 and grows toward the floppy DMA buffer at
+  0x80000, so it can be up to ~448 KiB (capped at 512 sectors / 256 KiB in the
+  Makefile; currently ~43). Plenty of headroom.
 - The bootloader gathers the memory map with `INT 15h/E820`, which every PC
   BIOS since ~1994 supports; genuinely ancient machines without it would need
   an `E801`/`AH=88h` fallback added to `do_e820`.
