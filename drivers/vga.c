@@ -225,22 +225,28 @@ static int bios_vbe_setup(void) {
     uint32_t list_lin = ((uint32_t)rd16b(info, 16) << 4) + rd16b(info, 14);
     volatile uint16_t *modes = (volatile uint16_t *)phys_ptr(list_lin);
 
-    /* Best-effort: read the monitor's preferred (native) resolution from EDID. */
+    /* Best-effort: read the monitor's preferred (native) resolution from a
+     * valid EDID (header 00 FF FF FF FF FF FF 00; detailed timing at byte 54). */
     int want_w = 0, want_h = 0;
     clear_regs(&r);
     r.ax = 0x4F15; r.bx = 0x0001; r.di = VBE_EDID;
     bios_int(0x10, &r);
     if (r.ax == 0x004F) {
-        volatile uint8_t *e = phys_ptr(VBE_EDID);     /* detailed timing @ 54 */
-        int hw = e[56] | ((e[58] & 0xF0) << 4);
-        int hh = e[59] | ((e[61] & 0xF0) << 4);
-        if (hw >= 320 && hw <= 4096 && hh >= 200 && hh <= 4096) {
-            want_w = hw; want_h = hh;
+        volatile uint8_t *e = phys_ptr(VBE_EDID);
+        if (e[0] == 0x00 && e[1] == 0xFF && e[2] == 0xFF && e[3] == 0xFF &&
+            e[4] == 0xFF && e[5] == 0xFF && e[6] == 0xFF && e[7] == 0x00) {
+            int hw = e[56] | ((e[58] & 0xF0) << 4);
+            int hh = e[59] | ((e[61] & 0xF0) << 4);
+            if (hw >= 640 && hw <= 4096 && hh >= 480 && hh <= 4096) {
+                want_w = hw; want_h = hh;
+            }
         }
     }
 
-    /* Scan the mode list for the best 32-bpp linear-framebuffer mode. */
-    int best_w = 0, best_h = 0;
+    /* Scan the mode list for the best linear-framebuffer mode. Accept 16/24/32
+     * bpp (many real cards expose only 16 or 24); prefer higher resolution,
+     * then higher colour depth. Constrain to the native size if we have it. */
+    int best_w = 0, best_h = 0, best_bpp = 0;
     uint16_t best_mode = 0xFFFF, best_pitch = 0;
     uint32_t best_lfb = 0;
     for (int i = 0; i < 400 && modes[i] != 0xFFFF; i++) {
@@ -251,27 +257,25 @@ static int bios_vbe_setup(void) {
         if (r.ax != 0x004F) continue;
         uint16_t attr = rd16b(mi, 0);
         if ((attr & 0x91) != 0x91) continue;          /* supported+graphics+LFB */
-        if (mi[25] != 32) continue;                   /* 32 bpp */
+        int bpp = mi[25];
+        if (bpp != 16 && bpp != 24 && bpp != 32) continue;
         int w = rd16b(mi, 18), h = rd16b(mi, 20);
+        if (w == 0 || h == 0) continue;
         uint16_t pitch = rd16b(mi, 50);
         if (pitch == 0) pitch = rd16b(mi, 16);
         uint32_t lfb = (uint32_t)rd16b(mi, 40) | ((uint32_t)rd16b(mi, 42) << 16);
         if (lfb == 0) continue;
 
-        int take = 0;
         if (want_w) {
-            if (w == want_w && h == want_h) {
-                best_w = w; best_h = h; best_mode = m;
-                best_pitch = pitch; best_lfb = lfb;
-                break;                                /* exact native match */
-            }
-            if (w <= want_w && h <= want_h && w * h > best_w * best_h) take = 1;
-        } else if (w <= 1280 && h <= 1024 && w * h > best_w * best_h) {
-            take = 1;
+            if (w > want_w || h > want_h) continue;   /* don't exceed native */
+        } else if (w > 1920 || h > 1200) {
+            continue;                                 /* sane cap without EDID */
         }
-        if (take) {
-            best_w = w; best_h = h; best_mode = m;
-            best_pitch = pitch; best_lfb = lfb;
+
+        long area = (long)w * h, best_area = (long)best_w * best_h;
+        if (area > best_area || (area == best_area && bpp > best_bpp)) {
+            best_w = w; best_h = h; best_bpp = bpp;
+            best_mode = m; best_pitch = pitch; best_lfb = lfb;
         }
     }
     if (best_mode == 0xFFFF) { pic_unmask(sm1, sm2); return -1; }
@@ -287,7 +291,7 @@ static int bios_vbe_setup(void) {
     g_mode   = 1;
     g_width  = best_w;
     g_height = best_h;
-    g_bpp    = 32;
+    g_bpp    = best_bpp;
     g_pitch  = best_pitch;
     map_range(best_lfb, (uint32_t)best_pitch * best_h);
     g_fb = (uint8_t *)phys_ptr(best_lfb);

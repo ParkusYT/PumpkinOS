@@ -89,18 +89,33 @@ int gfx_text_width(const char *s) { return (int)strlen(s) * FONT_W; }
 void gfx_present(void) {
     uint8_t *fb = vga_framebuffer();
     uint32_t pitch = vga_pitch();
+    int bpp = vga_bpp();
 
-    if (vga_bpp() == 8) {
-        for (int y = 0; y < gh; y++)
-            memcpy(fb + (uint32_t)y * pitch, buf + y * gw, gw);
-        return;
-    }
-
-    /* 32-bpp: expand indices through the palette LUT, row by row. */
     for (int y = 0; y < gh; y++) {
-        uint32_t *dst = (uint32_t *)(fb + (uint32_t)y * pitch);
-        uint8_t  *src = buf + y * gw;
-        for (int x = 0; x < gw; x++)
-            dst[x] = lut[src[x]];
+        uint8_t *src = buf + y * gw;
+        uint8_t *row = fb + (uint32_t)y * pitch;
+
+        if (bpp == 8) {
+            memcpy(row, src, gw);
+        } else if (bpp == 32) {
+            uint32_t *dst = (uint32_t *)row;
+            for (int x = 0; x < gw; x++)
+                dst[x] = lut[src[x]];
+        } else if (bpp == 24) {
+            for (int x = 0; x < gw; x++) {
+                uint32_t c = lut[src[x]];
+                uint8_t *p = row + x * 3;
+                p[0] = (uint8_t)(c);         /* B */
+                p[1] = (uint8_t)(c >> 8);    /* G */
+                p[2] = (uint8_t)(c >> 16);   /* R */
+            }
+        } else {                              /* 16 bpp (5:6:5) */
+            uint16_t *dst = (uint16_t *)row;
+            for (int x = 0; x < gw; x++) {
+                uint32_t c = lut[src[x]];
+                uint8_t r = (uint8_t)(c >> 16), g = (uint8_t)(c >> 8), b = (uint8_t)c;
+                dst[x] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+            }
+        }
     }
 }

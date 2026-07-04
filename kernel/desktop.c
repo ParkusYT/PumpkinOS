@@ -160,6 +160,15 @@ static void two(char *p, uint32_t v) {
     p[1] = (char)('0' + v % 10);
 }
 
+/* Append an unsigned integer to a string; returns the new end pointer. */
+static char *append_uint(char *p, uint32_t v) {
+    char tmp[10];
+    int n = 0;
+    do { tmp[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (n) *p++ = tmp[--n];
+    return p;
+}
+
 static void draw_taskbar(void) {
     int y = H - TB_H;
     gfx_fill_rect(0, y, W, TB_H, COL_TASKBAR);
@@ -168,6 +177,13 @@ static void draw_taskbar(void) {
     int pad = (TB_H - FONT_H) / 2;
     gfx_fill_rect(4, y + 2, 9 * FONT_W + 8, TB_H - 4, COL_ACCENT);
     gfx_text(8, y + pad, "PumpkinOS", COL_TITLE_TEXT, -1);
+
+    /* show the active resolution (e.g. "1024x768x32") */
+    char mode[20]; char *p = mode;
+    p = append_uint(p, (uint32_t)W); *p++ = 'x';
+    p = append_uint(p, (uint32_t)H); *p++ = 'x';
+    p = append_uint(p, (uint32_t)vga_bpp()); *p = 0;
+    gfx_text(9 * FONT_W + 24, y + pad, mode, COL_TASK_TEXT, -1);
 
     struct rtc_time t;
     rtc_read(&t);
