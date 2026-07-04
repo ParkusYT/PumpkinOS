@@ -1,0 +1,9 @@
+# Build output
+build/
+*.img
+
+# QEMU / debug scratch
+*.ppm
+*.png
+*.log
+*.sock
