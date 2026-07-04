@@ -6,6 +6,7 @@
 #include "pic.h"
 #include "console.h"
 #include "keyboard.h"
+#include "timer.h"
 #include <stdint.h>
 
 /* A single 32-bit IDT gate descriptor. */
@@ -122,7 +123,9 @@ void isr_handler(struct registers *r) {
 
     /* Otherwise it is a hardware IRQ (vectors 32..47). */
     int irq = r->int_no - 32;
-    if (irq == 1)
+    if (irq == 0)
+        timer_irq();
+    else if (irq == 1)
         keyboard_irq();
 
     pic_send_eoi(irq);

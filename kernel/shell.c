@@ -9,6 +9,7 @@
 #include "shell.h"
 #include "console.h"
 #include "keyboard.h"
+#include "timer.h"
 #include "string.h"
 #include "io.h"
 
@@ -36,6 +37,8 @@ static void cmd_help(void) {
     console_write("  banner        draw the PumpkinOS banner\n");
     console_write("  about         about PumpkinOS\n");
     console_write("  colors        show the VGA colour palette\n");
+    console_write("  uptime        time since boot\n");
+    console_write("  sleep <sec>   pause for <sec> seconds\n");
     console_write("  reboot        restart the machine\n");
     console_write("  halt          stop the CPU\n");
 }
@@ -56,6 +59,70 @@ static void cmd_colors(void) {
     }
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     console_write("\n");
+}
+
+/* Print a value as at least two digits (zero-padded), for HH:MM:SS. */
+static void print_2d(uint32_t v) {
+    if (v < 10)
+        console_putc('0');
+    console_write_dec(v);
+}
+
+static void cmd_uptime(void) {
+    uint32_t t  = timer_ticks();
+    uint32_t hz = timer_hz();
+    if (hz == 0) {
+        console_write("uptime: timer is not running\n");
+        return;
+    }
+
+    uint32_t total = t / hz;                 /* whole seconds since boot */
+    uint32_t days  = total / 86400;
+    uint32_t hours = (total / 3600) % 24;
+    uint32_t mins  = (total / 60) % 60;
+    uint32_t secs  = total % 60;
+
+    console_write("up ");
+    if (days) {
+        console_write_dec(days);
+        console_write("d ");
+    }
+    print_2d(hours);
+    console_putc(':');
+    print_2d(mins);
+    console_putc(':');
+    print_2d(secs);
+    console_write("   (");
+    console_write_dec(t);
+    console_write(" ticks @ ");
+    console_write_dec(hz);
+    console_write(" Hz)\n");
+}
+
+/* Parse a non-negative decimal integer; stops at the first non-digit. */
+static uint32_t parse_uint(const char *s) {
+    uint32_t v = 0;
+    while (*s >= '0' && *s <= '9') {
+        v = v * 10 + (uint32_t)(*s - '0');
+        s++;
+    }
+    return v;
+}
+
+static void cmd_sleep(const char *args) {
+    uint32_t secs = parse_uint(args);
+    if (secs == 0) {
+        console_write("usage: sleep <seconds>\n");
+        return;
+    }
+    if (secs > 3600)
+        secs = 3600;                         /* keep the shell responsive */
+
+    console_write("sleeping for ");
+    console_write_dec(secs);
+    console_write("s ...\n");
+    timer_sleep(secs * 1000);
+    console_write("awake!\n");
 }
 
 static void cmd_reboot(void) {
@@ -117,6 +184,10 @@ static void shell_execute(char *line) {
         cmd_about();
     else if (strcmp(cmd, "colors") == 0 || strcmp(cmd, "color") == 0)
         cmd_colors();
+    else if (strcmp(cmd, "uptime") == 0)
+        cmd_uptime();
+    else if (strcmp(cmd, "sleep") == 0)
+        cmd_sleep(args);
     else if (strcmp(cmd, "reboot") == 0)
         cmd_reboot();
     else if (strcmp(cmd, "halt") == 0)

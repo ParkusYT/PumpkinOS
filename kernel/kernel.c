@@ -9,6 +9,7 @@
 #include "console.h"
 #include "idt.h"
 #include "pic.h"
+#include "timer.h"
 #include "keyboard.h"
 #include "shell.h"
 
@@ -28,6 +29,12 @@ void kernel_main(void) {
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     console_write("  Remapping the 8259 PIC .............. ... ");
     pic_remap();
+    console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+    console_write("ok\n");
+
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  Starting PIT timer @ 100 Hz ........ ... ");
+    timer_init(100);
     console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
     console_write("ok\n");
 
