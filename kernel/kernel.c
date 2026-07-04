@@ -16,6 +16,7 @@
 #include "timer.h"
 #include "keyboard.h"
 #include "floppy.h"
+#include "ata.h"
 #include "sched.h"
 #include "fat12.h"
 #include "shell.h"
@@ -96,6 +97,21 @@ void kernel_main(void) {
     floppy_init();
     console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
     console_write("ok\n");
+
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  Detecting IDE/ATA hard disks ....... ... ");
+    ata_init();
+    if (ata_drive_count() > 0) {
+        console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+        console_write("ok");
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+        console_write("  (");
+        console_write_dec((uint32_t)ata_drive_count());
+        console_write(ata_drive_count() == 1 ? " disk)\n" : " disks)\n");
+    } else {
+        console_set_color(VGA_YELLOW, VGA_BLACK);
+        console_write("none\n");
+    }
 
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     console_write("  Mounting FAT12 filesystem .......... ... ");

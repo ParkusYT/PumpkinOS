@@ -17,6 +17,7 @@
 #include "gdt.h"
 #include "fat12.h"
 #include "rtc.h"
+#include "ata.h"
 #include "string.h"
 #include "io.h"
 
@@ -74,6 +75,7 @@ static void cmd_help(void) {
     console_write("  mkdir <name>  create a directory\n");
     console_write("  rm [-r] <f>   delete a file (or a tree with -r)\n");
     console_write("  rmdir <dir>   delete an empty directory\n");
+    console_write("  disks [read N] list IDE/ATA disks (or dump LBA N of disk 0)\n");
     console_write("  banner        draw the PumpkinOS banner\n");
     console_write("  about         about PumpkinOS\n");
     console_write("  colors        show the VGA colour palette\n");
@@ -432,6 +434,55 @@ static void cmd_date(void) {
     console_putc('\n');
 }
 
+/* List the IDE/ATA hard disks the driver found at boot, with their channel
+ * position, capacity and model. Optionally read+dump a sector: `disks read N`
+ * reads LBA N off disk 0 and shows the first 16 bytes as a sanity check. */
+static void cmd_disks(const char *args) {
+    int n = ata_drive_count();
+    if (n == 0) {
+        console_write("no IDE/ATA disks detected\n");
+        return;
+    }
+
+    if (strncmp(args, "read", 4) == 0) {
+        const char *p = args + 4;
+        while (*p == ' ' || *p == '\t') p++;
+        uint32_t lba = parse_uint(p);
+        static uint8_t sec[512];
+        if (ata_read_sectors(0, lba, 1, sec) != 0) {
+            console_write("read failed (out of range or controller error)\n");
+            return;
+        }
+        console_write("disk0 LBA ");
+        console_write_dec(lba);
+        console_write(" first 16 bytes:");
+        for (int i = 0; i < 16; i++) {
+            console_putc(' ');
+            console_write_hex(sec[i]);
+        }
+        console_putc('\n');
+        return;
+    }
+
+    console_write("  #  pos          size        model\n");
+    for (int i = 0; i < n; i++) {
+        const struct ata_drive *d = ata_get_drive(i);
+        console_write("  ");
+        console_write_dec((uint32_t)i);
+        console_write("  ");
+        console_write(d->channel ? "secondary/" : "primary/");
+        print_padded(d->slave ? "slave" : "master", 6);
+        console_write("  ");
+        console_write_dec(d->sectors / 2048);   /* 2048 sectors = 1 MiB */
+        console_write(" MiB");
+        console_write("  (");
+        console_write_dec(d->sectors);
+        console_write(" sec)  ");
+        console_write(d->model);
+        console_putc('\n');
+    }
+}
+
 static void cmd_mkdir(const char *args) {
     if (args[0] == '\0') { console_write("usage: mkdir <name>\n"); return; }
     fs_mkdir(args);
@@ -562,6 +613,8 @@ static void shell_execute(char *line) {
         cmd_rm(args);
     else if (strcmp(cmd, "rmdir") == 0)
         cmd_rmdir(args);
+    else if (strcmp(cmd, "disks") == 0 || strcmp(cmd, "hdd") == 0)
+        cmd_disks(args);
     else if (strcmp(cmd, "banner") == 0) {
         shell_banner();
         console_putc('\n');

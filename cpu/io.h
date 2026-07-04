@@ -18,6 +18,18 @@ static inline uint8_t inb(uint16_t port) {
     return ret;
 }
 
+/* Write a 16-bit word to an I/O port (used by the ATA PIO data register). */
+static inline void outw(uint16_t port, uint16_t val) {
+    __asm__ volatile("outw %0, %1" : : "a"(val), "Nd"(port));
+}
+
+/* Read a 16-bit word from an I/O port. */
+static inline uint16_t inw(uint16_t port) {
+    uint16_t ret;
+    __asm__ volatile("inw %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
 /* Tiny delay by doing a throwaway write to an unused port. Some old hardware
  * needs a moment between successive commands to the PIC / PS/2 controller. */
 static inline void io_wait(void) {
