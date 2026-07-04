@@ -226,7 +226,9 @@ both on-disk copies whenever it changes); directory sectors and file data are
 read-modify-written on demand. It supports the root directory and
 subdirectories, with a current working directory shown in the prompt:
 
-- `ls` / `cd` / `pwd` - list and walk directories (`.`, `..`, `/`).
+- `ls` / `cd` / `pwd` - list and walk directories (`.`, `..`, `/`). The shell
+  tab-completes filenames against the current directory, and the up/down arrows
+  recall previous commands.
 - `cat <file>` - stream a file off the disk, following its cluster chain.
 - `write <f> <t>` / `touch` - allocate clusters, write the data, and add a
   directory entry.

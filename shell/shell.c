@@ -685,9 +685,22 @@ void shell_run(void) {
                 replace_line(line, &len, "");
             }
         } else if (c == '\t') {
-            if (len < LINE_MAX - 1) {   /* treat tab as a single space */
-                line[len++] = ' ';
-                console_putc(' ');
+            /* complete the current word against the current directory */
+            size_t ws = len;
+            while (ws > 0 && line[ws - 1] != ' ') ws--;
+            char prefix[16];
+            size_t pl = 0;
+            for (size_t i = ws; i < len && pl < sizeof(prefix) - 1; i++)
+                prefix[pl++] = line[i];
+            prefix[pl] = '\0';
+
+            char comp[16];
+            if (fs_complete(prefix, comp, sizeof(comp)) >= 1 && strlen(comp) > pl) {
+                while (len > ws) { console_putc('\b'); len--; }   /* erase word */
+                for (const char *p = comp; *p && len < LINE_MAX - 1; p++) {
+                    line[len++] = *p;
+                    console_putc(*p);
+                }
             }
         } else if ((unsigned char)c >= ' ' && (unsigned char)c < 127) {
             if (len < LINE_MAX - 1) {

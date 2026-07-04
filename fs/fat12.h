@@ -14,6 +14,11 @@ int  fs_mounted(void);
 /* The current working directory path (for the prompt / 'pwd'). */
 const char *fs_cwd(void);
 
+/* Tab completion: fill 'out' with the longest common completion of entries in
+ * the current directory whose name starts with 'prefix'. Returns the number of
+ * matches (out is the single name when 1, the common prefix when more). */
+int fs_complete(const char *prefix, char *out, uint32_t outsize);
+
 /* Directory listing and navigation. */
 void fs_list(void);                     /* ls  */
 int  fs_cd(const char *name);           /* cd; 0 ok, -1 error */

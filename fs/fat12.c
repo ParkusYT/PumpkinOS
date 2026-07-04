@@ -641,3 +641,50 @@ void fs_pwd(void) {
     console_write(cwd_path);
     console_putc('\n');
 }
+
+/* ---- tab completion ------------------------------------------------------- */
+static char upper(char c) { return (c >= 'a' && c <= 'z') ? (char)(c - 32) : c; }
+
+int fs_complete(const char *prefix, char *out, uint32_t outsize) {
+    char up[13];
+    uint32_t pl = 0;
+    for (const char *q = prefix; *q && pl < sizeof(up) - 1; q++)
+        up[pl++] = upper(*q);
+    up[pl] = '\0';
+
+    int matches = 0;
+    out[0] = '\0';
+    uint8_t sec[512];
+    for (uint32_t idx = 0; ; idx++) {
+        uint32_t lba = dir_sector_lba(cwd_cluster, idx);
+        if (lba == 0 || read_fs(lba, 1, sec) != 0) break;
+        for (int e = 0; e < 16; e++) {
+            uint8_t *ent = sec + e * 32;
+            if (ent[0] == 0x00) goto fin;
+            if (ent[0] == 0xE5 || ent[11] == ATTR_LFN || (ent[11] & ATTR_VOLUME))
+                continue;
+            if (ent[0] == '.') continue;
+
+            char name[13];
+            format_name(ent, name);
+            int ok = 1;
+            for (uint32_t i = 0; i < pl; i++)
+                if (name[i] == '\0' || upper(name[i]) != up[i]) { ok = 0; break; }
+            if (!ok) continue;
+
+            matches++;
+            if (matches == 1) {
+                uint32_t i = 0;
+                for (; name[i] && i < outsize - 1; i++) out[i] = name[i];
+                out[i] = '\0';
+            } else {
+                uint32_t i = 0;                     /* shrink to common prefix */
+                while (out[i] && name[i] && upper(out[i]) == upper(name[i])) i++;
+                out[i] = '\0';
+            }
+        }
+    }
+fin:
+    floppy_motor_off();
+    return matches;
+}
