@@ -194,108 +194,19 @@ static void pic_unmask(uint8_t m1, uint8_t m2) {
     outb(0x21, m1); outb(0xA1, m2);
 }
 
-static uint16_t rd16b(volatile uint8_t *p, int off) {
-    return (uint16_t)(p[off] | (p[off + 1] << 8));
-}
 static void clear_regs(regs16_t *r) {
     r->di = r->si = r->bp = r->sp = r->bx = r->dx = r->cx = r->ax = 0;
     r->gs = r->fs = r->es = r->ds = r->flags = 0;
 }
 
+/* Set a high-res mode through the real VESA BIOS (int 0x10) using the real-mode
+ * thunk. DISABLED: the thunk does not reliably preserve the C caller's register
+ * state across the PM<->real-mode transition on real hardware, so mode setting
+ * comes back corrupted. The pieces (cpu/bios.asm, the PCI framebuffer lookup,
+ * the mode candidates below) are kept for a future rewrite that runs the whole
+ * VBE sequence in a single real-mode excursion, holding no C state across it. */
 static int bios_vbe_setup(void) {
-    volatile uint8_t *info = phys_ptr(VBE_INFO);
-    volatile uint8_t *mi   = phys_ptr(VBE_MODE);
-    regs16_t r;
-    uint8_t sm1, sm2;
-
-    pic_mask_all(&sm1, &sm2);
-
-    /* 4F00: controller info (request VBE 2.0+ with the 'VBE2' tag). */
-    for (int i = 0; i < 512; i++) info[i] = 0;
-    info[0] = 'V'; info[1] = 'B'; info[2] = 'E'; info[3] = '2';
-    clear_regs(&r);
-    r.ax = 0x4F00; r.di = VBE_INFO;
-    bios_int(0x10, &r);
-    if (r.ax != 0x004F ||
-        !(info[0] == 'V' && info[1] == 'E' && info[2] == 'S' && info[3] == 'A')) {
-        pic_unmask(sm1, sm2);
-        return -1;
-    }
-
-    uint32_t list_lin = ((uint32_t)rd16b(info, 16) << 4) + rd16b(info, 14);
-    volatile uint16_t *modes = (volatile uint16_t *)phys_ptr(list_lin);
-
-    /* Best-effort: read the monitor's preferred (native) resolution from a
-     * valid EDID (header 00 FF FF FF FF FF FF 00; detailed timing at byte 54). */
-    int want_w = 0, want_h = 0;
-    clear_regs(&r);
-    r.ax = 0x4F15; r.bx = 0x0001; r.di = VBE_EDID;
-    bios_int(0x10, &r);
-    if (r.ax == 0x004F) {
-        volatile uint8_t *e = phys_ptr(VBE_EDID);
-        if (e[0] == 0x00 && e[1] == 0xFF && e[2] == 0xFF && e[3] == 0xFF &&
-            e[4] == 0xFF && e[5] == 0xFF && e[6] == 0xFF && e[7] == 0x00) {
-            int hw = e[56] | ((e[58] & 0xF0) << 4);
-            int hh = e[59] | ((e[61] & 0xF0) << 4);
-            if (hw >= 640 && hw <= 4096 && hh >= 480 && hh <= 4096) {
-                want_w = hw; want_h = hh;
-            }
-        }
-    }
-
-    /* Scan the mode list for the best linear-framebuffer mode. Accept 16/24/32
-     * bpp (many real cards expose only 16 or 24); prefer higher resolution,
-     * then higher colour depth. Constrain to the native size if we have it. */
-    int best_w = 0, best_h = 0, best_bpp = 0;
-    uint16_t best_mode = 0xFFFF, best_pitch = 0;
-    uint32_t best_lfb = 0;
-    for (int i = 0; i < 400 && modes[i] != 0xFFFF; i++) {
-        uint16_t m = modes[i];
-        clear_regs(&r);
-        r.ax = 0x4F01; r.cx = m; r.di = VBE_MODE;
-        bios_int(0x10, &r);
-        if (r.ax != 0x004F) continue;
-        uint16_t attr = rd16b(mi, 0);
-        if ((attr & 0x91) != 0x91) continue;          /* supported+graphics+LFB */
-        int bpp = mi[25];
-        if (bpp != 16 && bpp != 24 && bpp != 32) continue;
-        int w = rd16b(mi, 18), h = rd16b(mi, 20);
-        if (w == 0 || h == 0) continue;
-        uint16_t pitch = rd16b(mi, 50);
-        if (pitch == 0) pitch = rd16b(mi, 16);
-        uint32_t lfb = (uint32_t)rd16b(mi, 40) | ((uint32_t)rd16b(mi, 42) << 16);
-        if (lfb == 0) continue;
-
-        if (want_w) {
-            if (w > want_w || h > want_h) continue;   /* don't exceed native */
-        } else if (w > 1920 || h > 1200) {
-            continue;                                 /* sane cap without EDID */
-        }
-
-        long area = (long)w * h, best_area = (long)best_w * best_h;
-        if (area > best_area || (area == best_area && bpp > best_bpp)) {
-            best_w = w; best_h = h; best_bpp = bpp;
-            best_mode = m; best_pitch = pitch; best_lfb = lfb;
-        }
-    }
-    if (best_mode == 0xFFFF) { pic_unmask(sm1, sm2); return -1; }
-
-    /* 4F02: set the chosen mode with the linear-framebuffer bit (0x4000). */
-    clear_regs(&r);
-    r.ax = 0x4F02; r.bx = (uint16_t)(best_mode | 0x4000);
-    bios_int(0x10, &r);
-    pic_unmask(sm1, sm2);
-    if (r.ax != 0x004F) return -1;
-
-    g_kind   = 2;
-    g_mode   = 1;
-    g_width  = best_w;
-    g_height = best_h;
-    g_bpp    = best_bpp;
-    g_pitch  = best_pitch;
-    map_range(best_lfb, (uint32_t)best_pitch * best_h);
-    g_fb = (uint8_t *)phys_ptr(best_lfb);
-    return 0;
+    return -1;
 }
 
 /* ---- Bochs/QEMU dispi (VMs without a usable VESA BIOS path) ---------------- */
