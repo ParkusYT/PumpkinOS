@@ -6,9 +6,10 @@ into 32-bit protected mode, and drops you into an interactive shell driven by
 a PS/2 keyboard, with output mirrored to the VGA text console and COM1 serial.
 
 It currently has: a two-stage-ish boot into protected mode, an interrupt
-descriptor table with a CPU-exception handler, a remapped 8259 PIC, a PIT
-timer (system tick), an interrupt-driven PS/2 keyboard driver, a physical
-memory manager (bitmap frame allocator over the BIOS E820 map), and
+descriptor table with CPU-exception and page-fault handlers, a remapped 8259
+PIC, a PIT timer (system tick), an interrupt-driven PS/2 keyboard driver, a
+physical memory manager (bitmap frame allocator over the BIOS E820 map),
+paging (identity-mapped, with a `map`/`unmap` API), and
 **PumpkinShell (PSH)**.
 
 ## What's here
@@ -24,6 +25,7 @@ memory manager (bitmap frame allocator over the BIOS E820 map), and
 | `kernel/pic.{c,h}`   | Remaps the 8259 PIC (IRQs → vectors 32–47) and sends EOIs.   |
 | `kernel/timer.{c,h}` | PIT (8254) on IRQ0: 100 Hz system tick, uptime, `timer_sleep`. |
 | `kernel/pmm.{c,h}`   | Physical memory manager: bitmap allocator over the E820 map. |
+| `kernel/paging.{c,h}`| 32-bit paging: identity map, `paging_map`/`unmap`, page-fault reporter. |
 | `kernel/keyboard.{c,h}` | PS/2 keyboard driver: IRQ1, scancode set 1, shift/caps, ring buffer. |
 | `kernel/shell.{c,h}` | PumpkinShell (PSH): the interactive command loop.            |
 | `kernel/string.{c,h}`| Freestanding `memset`/`memcpy`/`strcmp`/…                    |
@@ -44,6 +46,8 @@ uptime        time since boot (from the PIT tick counter)
 sleep <sec>   pause for <sec> seconds (uses timer_sleep)
 meminfo       print the BIOS E820 map + frame allocator stats
 memtest       allocate/free a few frames (exercises the allocator)
+pgtest        map a frame to a high virtual address and prove the translation
+pgfault       deliberately touch unmapped memory (shows the fault handler; halts)
 reboot        restart the machine (via the 8042 controller)
 halt          stop the CPU
 ```
@@ -67,8 +71,9 @@ entry.asm (32-bit): zero .bss, set stack --> kernel_main() in kernel.c
   4. pic_remap()     -- 8259 PIC: IRQs -> vectors 32..47
   5. timer_init(100) -- PIT on IRQ0, 100 Hz system tick
   6. keyboard_init() -- drain the 8042, unmask IRQ1
-  7. sti             -- enable interrupts
-  8. shell_run()     -- PumpkinShell REPL (reads keys via IRQ1, never returns)
+  7. paging_init()   -- identity-map RAM, load CR3, set CR0.PG
+  8. sti             -- enable interrupts
+  9. shell_run()     -- PumpkinShell REPL (reads keys via IRQ1, never returns)
 ```
 
 ## Interrupts & the keyboard
@@ -96,6 +101,22 @@ own storage. `pmm_alloc_frame()` / `pmm_free_frame()` hand out and reclaim
 frames; `meminfo` prints the map and stats. All arithmetic is 32-bit / shift
 based on purpose — the kernel links without libgcc, so there is no `__udivdi3`
 for 64-bit division.
+
+## Paging
+
+`paging_init()` builds classic 32-bit two-level paging: a 1024-entry page
+directory, each entry pointing at a 1024-entry page table, each mapping a 4 KiB
+frame (page tables come from the PMM). It **identity-maps** all usable RAM
+(virtual == physical), loads CR3, and sets `CR0.PG` — so the running kernel,
+stack, PMM bitmap, VGA buffer, and the page structures themselves keep working
+the instant paging turns on. Only 4 KiB pages are used and the TLB is flushed
+by reloading CR3 (not `invlpg`), so it runs on a plain i386 with no PSE.
+
+`paging_map(virt, phys, flags)` / `paging_unmap(virt)` add and remove mappings
+(allocating page tables on demand); `paging_get_phys(virt)` walks the tables.
+Vector 14 (page fault) is routed to `paging_fault()`, which decodes CR2 and the
+error code before halting. The `pgtest` and `pgfault` shell commands exercise
+both paths.
 
 ## Memory layout (physical)
 
@@ -136,10 +157,10 @@ hardware. The image is a standard 1.44 MB raw floppy.)
 
 ## Notes / next steps
 
-- Done so far: protected mode, IDT + exception handler, PIC remap, PIT timer,
-  PS/2 keyboard, physical memory manager, and the shell. Natural next steps:
-  **paging** (page directory/tables + `CR0.PG`) built on top of the frame
-  allocator, then a kernel heap (`kmalloc`), then multitasking on the timer.
+- Done so far: protected mode, IDT + exception/page-fault handlers, PIC remap,
+  PIT timer, PS/2 keyboard, physical memory manager, paging, and the shell.
+  Natural next steps: a **kernel heap** (`kmalloc`/`kfree` over paged frames),
+  then multitasking on the timer tick, then user mode (ring 3) + syscalls.
 - The bootloader gathers the memory map with `INT 15h/E820`, which every PC
   BIOS since ~1994 supports; genuinely ancient machines without it would need
   an `E801`/`AH=88h` fallback added to `do_e820`.

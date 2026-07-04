@@ -11,6 +11,7 @@
 #include "keyboard.h"
 #include "timer.h"
 #include "pmm.h"
+#include "paging.h"
 #include "string.h"
 #include "io.h"
 
@@ -42,6 +43,8 @@ static void cmd_help(void) {
     console_write("  sleep <sec>   pause for <sec> seconds\n");
     console_write("  meminfo       show the physical memory map\n");
     console_write("  memtest       allocate/free some frames\n");
+    console_write("  pgtest        map a frame and prove the translation\n");
+    console_write("  pgfault       trigger a page fault (halts - demo)\n");
     console_write("  reboot        restart the machine\n");
     console_write("  halt          stop the CPU\n");
 }
@@ -163,6 +166,72 @@ static void cmd_memtest(void) {
         console_write("  (MISMATCH!)\n");
 }
 
+/* Demonstrate paging: map a fresh physical frame at a high virtual address,
+ * write through the virtual pointer, and confirm the same bytes appear at the
+ * frame's identity-mapped physical address (i.e. the translation works). */
+static void cmd_pgtest(void) {
+    console_write("paging enabled: ");
+    console_write(paging_is_enabled() ? "yes\n" : "no\n");
+
+    console_write("  identity check: virt 0x000B8000 -> phys ");
+    console_write_hex(paging_get_phys(0xB8000));
+    console_putc('\n');
+
+    uint32_t phys = pmm_alloc_frame();
+    if (phys == 0) {
+        console_write("  out of memory\n");
+        return;
+    }
+    uint32_t virt = 0xD0000000;
+    if (paging_map(virt, phys, PAGE_PRESENT | PAGE_WRITE) != 0) {
+        console_write("  paging_map failed\n");
+        pmm_free_frame(phys);
+        return;
+    }
+    console_write("  mapped virt ");
+    console_write_hex(virt);
+    console_write(" -> phys ");
+    console_write_hex(phys);
+    console_putc('\n');
+
+    volatile uint32_t *vptr = (volatile uint32_t *)virt;
+    volatile uint32_t *pptr = (volatile uint32_t *)phys;   /* identity-mapped */
+    *vptr = 0xCAFEBABE;
+
+    console_write("  wrote 0xCAFEBABE via virtual; read back ");
+    console_write_hex(*vptr);
+    console_write(", via physical ");
+    console_write_hex(*pptr);
+    console_putc('\n');
+
+    if (*vptr == 0xCAFEBABE && *pptr == 0xCAFEBABE)
+        console_write("  translation verified OK\n");
+    else
+        console_write("  MISMATCH!\n");
+
+    console_write("  paging_get_phys(0xD0000000) = ");
+    console_write_hex(paging_get_phys(virt));
+    console_putc('\n');
+
+    paging_unmap(virt);          /* tidy up so repeated runs don't leak/alias */
+    pmm_free_frame(phys);
+}
+
+/* Deliberately touch an unmapped address to show the page-fault handler.
+ * This halts the machine (by design) - it is a demonstration. */
+static void cmd_pgfault(void) {
+    uint32_t addr = 0xDEADB000;              /* far above the identity map */
+    __asm__("" : "+r"(addr));                /* hide the constant from GCC */
+    console_write("touching unmapped ");
+    console_write_hex(addr);
+    console_write(" (expect a page fault)...\n");
+    volatile uint32_t *bad = (volatile uint32_t *)addr;
+    uint32_t v = *bad;                        /* triggers #PF - never returns */
+    console_write("  unexpectedly read ");
+    console_write_hex(v);
+    console_putc('\n');
+}
+
 static void cmd_reboot(void) {
     console_write("Rebooting...\n");
     /* Pulse the CPU reset line via the 8042 keyboard controller. */
@@ -230,6 +299,10 @@ static void shell_execute(char *line) {
         cmd_meminfo();
     else if (strcmp(cmd, "memtest") == 0)
         cmd_memtest();
+    else if (strcmp(cmd, "pgtest") == 0)
+        cmd_pgtest();
+    else if (strcmp(cmd, "pgfault") == 0)
+        cmd_pgfault();
     else if (strcmp(cmd, "reboot") == 0)
         cmd_reboot();
     else if (strcmp(cmd, "halt") == 0)

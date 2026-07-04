@@ -7,6 +7,7 @@
 #include "console.h"
 #include "keyboard.h"
 #include "timer.h"
+#include "paging.h"
 #include <stdint.h>
 
 /* A single 32-bit IDT gate descriptor. */
@@ -104,6 +105,11 @@ void idt_init(void) {
 
 /* ---- the actual dispatcher, called from isr.asm --------------------------- */
 void isr_handler(struct registers *r) {
+    if (r->int_no == 14) {
+        /* Page fault gets a dedicated reporter that decodes CR2. */
+        paging_fault(r);
+    }
+
     if (r->int_no < 32) {
         /* Unhandled CPU exception: report it and stop rather than silently
          * triple-faulting. */
