@@ -11,43 +11,16 @@
 #include "keyboard.h"
 #include "timer.h"
 #include "pmm.h"
-#include "paging.h"
-#include "kheap.h"
-#include "sched.h"
-#include "gdt.h"
 #include "fat12.h"
 #include "rtc.h"
 #include "ata.h"
 #include "acpi.h"
 #include "elf.h"
+#include "desktop.h"
 #include "string.h"
 #include "io.h"
 
-/* ring-3 entry helper (cpu/usermode.asm) and the user blobs (user/user.asm) */
-extern void enter_user_mode(uint32_t entry, uint32_t user_esp);
-extern char user_program_start[], user_program_end[];
-extern char user_fault_start[],   user_fault_end[];
-
-#define UCODE_VADDR  0x40000000u   /* where the user program is mapped   */
-#define USTACK_VADDR 0x40008000u   /* one page of user stack             */
-
-#define PROMPT      "pksh> "
 #define LINE_MAX    128
-
-/* ---- background demo tasks ------------------------------------------------ */
-/* A worker just spins, bumping its own task counter. Because it never yields,
- * the only way the other tasks (and the shell) keep running is the timer
- * preempting it -- so a rising counter is proof of preemptive multitasking. */
-static void demo_worker(void *arg) {
-    (void)arg;
-    for (;;)
-        sched_current()->counter++;
-}
-
-void shell_spawn_demo_tasks(void) {
-    task_spawn(demo_worker, 0, "worker-a");
-    task_spawn(demo_worker, 0, "worker-b");
-}
 
 /* ---- the pumpkin banner (shared with the boot screen) --------------------- */
 void shell_banner(void) {
@@ -64,39 +37,15 @@ void shell_banner(void) {
 
 /* ---- built-in commands ---------------------------------------------------- */
 static void cmd_help(void) {
-    console_write("PumpkinShell (PKSH) built-in commands:\n");
-    console_write("  help          show this help\n");
-    console_write("  clear, cls    clear the screen\n");
-    console_write("  echo <text>   print <text>\n");
-    console_write("  ls            list the current directory\n");
-    console_write("  cd <dir>      change directory (.. and / work)\n");
-    console_write("  pwd           print the working directory\n");
-    console_write("  cat <file>    print a file's contents\n");
-    console_write("  write <f> <t> create/overwrite file <f> with text <t>\n");
-    console_write("  touch <file>  create an empty file\n");
-    console_write("  mkdir <name>  create a directory\n");
-    console_write("  rm [-r] <f>   delete a file (or a tree with -r)\n");
-    console_write("  rmdir <dir>   delete an empty directory\n");
-    console_write("  disks [read N] list IDE/ATA disks (or dump LBA N of disk 0)\n");
-    console_write("  banner        draw the PumpkinOS banner\n");
-    console_write("  about         about PumpkinOS\n");
-    console_write("  colors        show the VGA colour palette\n");
-    console_write("  date          show the current date and time\n");
-    console_write("  uptime        time since boot\n");
-    console_write("  sleep <sec>   pause for <sec> seconds\n");
-    console_write("  meminfo       show the physical memory map\n");
-    console_write("  memtest       allocate/free some frames\n");
-    console_write("  pgtest        map a frame and prove the translation\n");
-    console_write("  pgfault       trigger a page fault (halts - demo)\n");
-    console_write("  heap          show kernel heap statistics\n");
-    console_write("  htest         exercise kmalloc/kfree\n");
-    console_write("  tasks         list scheduler tasks and their counters\n");
-    console_write("  user          run a program in ring 3 via syscalls\n");
-    console_write("  userfault     ring-3 task touches kernel memory (halts - demo)\n");
-    console_write("  run <f.elf>   load and run an ELF program from disk (ring 3)\n");
-    console_write("  poweroff      soft power-off via ACPI\n");
-    console_write("  reboot        restart the machine\n");
-    console_write("  halt          stop the CPU\n");
+    console_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
+    console_write("PumpkinShell (PKSH) commands:\n");
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  General : help  clear  echo <text>  banner  about\n");
+    console_write("  Files   : ls  cd <d>  pwd  cat <f>  write <f> <t>  touch <f>\n");
+    console_write("            mkdir <d>  rm [-r] <f>  rmdir <d>\n");
+    console_write("  System  : disks [read N]  meminfo  date  uptime  sleep <s>\n");
+    console_write("  Programs: run <file.elf>  desktop\n");
+    console_write("  Power   : reboot  poweroff  halt\n");
 }
 
 static void cmd_about(void) {
@@ -105,16 +54,6 @@ static void cmd_about(void) {
     console_write("  PumpkinOS - a 32-bit, BIOS-only hobby OS.\n");
     console_write("  Protected mode, VGA + serial console, PS/2 keyboard,\n");
     console_write("  and this very shell: PumpkinShell (PKSH).\n\n");
-}
-
-static void cmd_colors(void) {
-    for (int i = 0; i < 16; i++) {
-        console_set_color((enum vga_color)i, VGA_BLACK);
-        console_write(" #");
-        console_write_dec((uint32_t)i);
-    }
-    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
-    console_write("\n");
 }
 
 /* Print a value as at least two digits (zero-padded), for HH:MM:SS. */
@@ -185,220 +124,6 @@ static void cmd_meminfo(void) {
     pmm_report();
 }
 
-/* Allocate a few frames, show their (distinct, page-aligned) addresses, then
- * free them and confirm the free count is restored. Exercises the allocator. */
-static void cmd_memtest(void) {
-    uint32_t start_free = pmm_free_frames();
-    console_write("free frames before: ");
-    console_write_dec(start_free);
-    console_putc('\n');
-
-    uint32_t frames[4];
-    for (int i = 0; i < 4; i++) {
-        frames[i] = pmm_alloc_frame();
-        console_write("  alloc frame ");
-        console_write_dec((uint32_t)i);
-        console_write(" -> ");
-        console_write_hex(frames[i]);
-        console_putc('\n');
-    }
-    console_write("free frames after 4 allocs: ");
-    console_write_dec(pmm_free_frames());
-    console_putc('\n');
-
-    for (int i = 0; i < 4; i++)
-        pmm_free_frame(frames[i]);
-    console_write("free frames after freeing: ");
-    console_write_dec(pmm_free_frames());
-    if (pmm_free_frames() == start_free)
-        console_write("  (restored OK)\n");
-    else
-        console_write("  (MISMATCH!)\n");
-}
-
-/* Demonstrate paging: map a fresh physical frame at a high virtual address,
- * write through the virtual pointer, and confirm the same bytes appear at the
- * frame's identity-mapped physical address (i.e. the translation works). */
-static void cmd_pgtest(void) {
-    console_write("paging enabled: ");
-    console_write(paging_is_enabled() ? "yes\n" : "no\n");
-
-    console_write("  identity check: virt 0x000B8000 -> phys ");
-    console_write_hex(paging_get_phys(0xB8000));
-    console_putc('\n');
-
-    uint32_t phys = pmm_alloc_frame();
-    if (phys == 0) {
-        console_write("  out of memory\n");
-        return;
-    }
-    uint32_t virt = 0xD0000000;
-    if (paging_map(virt, phys, PAGE_PRESENT | PAGE_WRITE) != 0) {
-        console_write("  paging_map failed\n");
-        pmm_free_frame(phys);
-        return;
-    }
-    console_write("  mapped virt ");
-    console_write_hex(virt);
-    console_write(" -> phys ");
-    console_write_hex(phys);
-    console_putc('\n');
-
-    volatile uint32_t *vptr = (volatile uint32_t *)virt;
-    volatile uint32_t *pptr = (volatile uint32_t *)phys;   /* identity-mapped */
-    *vptr = 0xCAFEBABE;
-
-    console_write("  wrote 0xCAFEBABE via virtual; read back ");
-    console_write_hex(*vptr);
-    console_write(", via physical ");
-    console_write_hex(*pptr);
-    console_putc('\n');
-
-    if (*vptr == 0xCAFEBABE && *pptr == 0xCAFEBABE)
-        console_write("  translation verified OK\n");
-    else
-        console_write("  MISMATCH!\n");
-
-    console_write("  paging_get_phys(0xD0000000) = ");
-    console_write_hex(paging_get_phys(virt));
-    console_putc('\n');
-
-    paging_unmap(virt);          /* tidy up so repeated runs don't leak/alias */
-    pmm_free_frame(phys);
-}
-
-/* Deliberately touch an unmapped address to show the page-fault handler.
- * This halts the machine (by design) - it is a demonstration. */
-static void cmd_pgfault(void) {
-    uint32_t addr = 0xDEADB000;              /* far above the identity map */
-    __asm__("" : "+r"(addr));                /* hide the constant from GCC */
-    console_write("touching unmapped ");
-    console_write_hex(addr);
-    console_write(" (expect a page fault)...\n");
-    volatile uint32_t *bad = (volatile uint32_t *)addr;
-    uint32_t v = *bad;                        /* triggers #PF - never returns */
-    console_write("  unexpectedly read ");
-    console_write_hex(v);
-    console_putc('\n');
-}
-
-static void cmd_heap(void) {
-    kheap_report();
-}
-
-/* Exercise the allocator: allocate blocks, prove the memory is real by writing
- * and reading a pattern, then free one and show the space gets reused. */
-static void cmd_htest(void) {
-    console_write("initial heap:\n");
-    kheap_report();
-
-    void *a = kmalloc(100);
-    void *b = kmalloc(2000);
-    void *c = kmalloc(50);
-    console_write("  kmalloc(100)  -> ");
-    console_write_hex((uint32_t)a);
-    console_write("\n  kmalloc(2000) -> ");
-    console_write_hex((uint32_t)b);
-    console_write("\n  kmalloc(50)   -> ");
-    console_write_hex((uint32_t)c);
-    console_putc('\n');
-
-    /* Write a pattern through 'a' and read it back - proves the pages are
-     * really mapped and writable. */
-    uint32_t *arr = (uint32_t *)a;
-    int ok = 1;
-    for (int i = 0; i < 25; i++)
-        arr[i] = (uint32_t)(i * 2654435761u);
-    for (int i = 0; i < 25; i++)
-        if (arr[i] != (uint32_t)(i * 2654435761u))
-            ok = 0;
-    console_write("  write/read pattern: ");
-    console_write(ok ? "OK\n" : "FAILED\n");
-
-    console_write("after 3 allocs:\n");
-    kheap_report();
-
-    kfree(b);
-    console_write("freed the 2000-byte block; reallocating 1000...\n");
-    void *d = kmalloc(1000);
-    console_write("  kmalloc(1000) -> ");
-    console_write_hex((uint32_t)d);
-    console_write((d == b) ? "  (reused the freed block)\n" : "\n");
-
-    kfree(a);
-    kfree(c);
-    kfree(d);
-    console_write("after freeing everything:\n");
-    kheap_report();
-}
-
-/* Pad a string out to 'width' columns with trailing spaces. */
-static void print_padded(const char *s, int width) {
-    int n = 0;
-    while (s[n]) {
-        console_putc(s[n]);
-        n++;
-    }
-    while (n++ < width)
-        console_putc(' ');
-}
-
-static void cmd_tasks(void) {
-    console_write("  id  name        state  counter\n");
-    task_t *start = sched_current();
-    task_t *t = start;
-    do {
-        console_write("  ");
-        console_write_dec(t->id);
-        console_write("   ");
-        print_padded(t->name, 12);
-        print_padded(t->state == 0 ? "alive" : "dead", 7);
-        console_write_dec(t->counter);
-        if (t == start)
-            console_write("   <- shell");
-        console_putc('\n');
-        t = t->next;
-    } while (t != start);
-    console_write("  (");
-    console_write_dec(sched_count());
-    console_write(" tasks; run 'tasks' again - worker counters should climb)\n");
-}
-
-/* Runs as a kernel thread: maps a user code+stack page, copies a ring-3 blob
- * in, points the TSS at this task's kernel stack, and drops to ring 3. It does
- * not return - the blob exits (or faults) via a syscall. arg selects the blob:
- * 0 = the clean demo, 1 = the read-kernel-memory fault demo. */
-static void user_task_entry(void *arg) {
-    char *start = ((uint32_t)arg == 1) ? user_fault_start   : user_program_start;
-    char *end   = ((uint32_t)arg == 1) ? user_fault_end     : user_program_end;
-
-    uint32_t code = pmm_alloc_frame();
-    uint32_t stk  = pmm_alloc_frame();
-    if (code == 0 || stk == 0) {
-        console_write("user: out of memory\n");
-        return;
-    }
-    paging_map(UCODE_VADDR,  code, PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
-    paging_map(USTACK_VADDR, stk,  PAGE_PRESENT | PAGE_WRITE | PAGE_USER);
-
-    memcpy((void *)UCODE_VADDR, start, (uint32_t)(end - start));
-
-    /* Traps from ring 3 must land on this task's own kernel stack. */
-    tss_set_esp0(sched_current()->kstack_top);
-
-    enter_user_mode(UCODE_VADDR, USTACK_VADDR + 4096);  /* never returns */
-}
-
-static void cmd_user(void) {
-    console_write("[pksh] spawning a ring-3 task; watch for its [ring3] line...\n");
-    task_spawn(user_task_entry, (void *)0, "user");
-}
-
-static void cmd_userfault(void) {
-    console_write("[pksh] ring-3 task will read kernel memory (expect a fault)...\n");
-    task_spawn(user_task_entry, (void *)1, "userflt");
-}
-
 static void cmd_ls(void) {
     fs_list();
 }
@@ -436,6 +161,13 @@ static void cmd_date(void) {
     console_putc(':'); print2(t.minute);
     console_putc(':'); print2(t.second);
     console_putc('\n');
+}
+
+/* Pad a string out to 'width' columns with trailing spaces. */
+static void print_padded(const char *s, int width) {
+    int n = 0;
+    while (s[n]) { console_putc(s[n]); n++; }
+    while (n++ < width) console_putc(' ');
 }
 
 /* List the IDE/ATA hard disks the driver found at boot, with their channel
@@ -649,32 +381,16 @@ static void shell_execute(char *line) {
     }
     else if (strcmp(cmd, "about") == 0)
         cmd_about();
-    else if (strcmp(cmd, "colors") == 0 || strcmp(cmd, "color") == 0)
-        cmd_colors();
     else if (strcmp(cmd, "uptime") == 0)
         cmd_uptime();
     else if (strcmp(cmd, "sleep") == 0)
         cmd_sleep(args);
     else if (strcmp(cmd, "meminfo") == 0)
         cmd_meminfo();
-    else if (strcmp(cmd, "memtest") == 0)
-        cmd_memtest();
-    else if (strcmp(cmd, "pgtest") == 0)
-        cmd_pgtest();
-    else if (strcmp(cmd, "pgfault") == 0)
-        cmd_pgfault();
-    else if (strcmp(cmd, "heap") == 0)
-        cmd_heap();
-    else if (strcmp(cmd, "htest") == 0)
-        cmd_htest();
-    else if (strcmp(cmd, "tasks") == 0)
-        cmd_tasks();
-    else if (strcmp(cmd, "user") == 0)
-        cmd_user();
-    else if (strcmp(cmd, "userfault") == 0)
-        cmd_userfault();
     else if (strcmp(cmd, "run") == 0 || strcmp(cmd, "exec") == 0)
         cmd_run(args);
+    else if (strcmp(cmd, "desktop") == 0 || strcmp(cmd, "gui") == 0)
+        desktop_run();
     else if (strcmp(cmd, "poweroff") == 0 || strcmp(cmd, "shutdown") == 0)
         cmd_poweroff();
     else if (strcmp(cmd, "reboot") == 0)

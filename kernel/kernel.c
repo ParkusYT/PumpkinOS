@@ -15,6 +15,7 @@
 #include "pic.h"
 #include "timer.h"
 #include "keyboard.h"
+#include "mouse.h"
 #include "floppy.h"
 #include "ata.h"
 #include "acpi.h"
@@ -70,6 +71,12 @@ void kernel_main(void) {
     console_write("ok\n");
 
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  Starting PS/2 mouse driver ......... ... ");
+    mouse_init();
+    console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+    console_write("ok\n");
+
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     console_write("  Enabling paging (identity map) ..... ... ");
     paging_init();
     console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
@@ -93,9 +100,8 @@ void kernel_main(void) {
     }
 
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
-    console_write("  Starting scheduler + demo tasks .... ... ");
+    console_write("  Starting the scheduler ............. ... ");
     sched_init();                 /* this boot context becomes task 0 */
-    shell_spawn_demo_tasks();     /* two background worker threads */
     console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
     console_write("ok\n");
 

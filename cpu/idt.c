@@ -6,6 +6,7 @@
 #include "pic.h"
 #include "console.h"
 #include "keyboard.h"
+#include "mouse.h"
 #include "timer.h"
 #include "floppy.h"
 #include "paging.h"
@@ -154,6 +155,8 @@ void isr_handler(struct registers *r) {
         keyboard_irq();
     else if (irq == 6)
         floppy_irq();
+    else if (irq == 12)
+        mouse_irq();
 
     pic_send_eoi(irq);
 }
