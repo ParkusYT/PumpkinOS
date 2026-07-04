@@ -63,11 +63,13 @@ HEADERS    := $(wildcard $(addsuffix /*.h,$(SRC_DIRS)))
 KERNEL_ELF := $(BUILD)/kernel.elf
 KERNEL_BIN := $(BUILD)/kernel.bin
 
-# FAT12 RAM-disk image: built from every file in fsroot/, loaded by the
-# bootloader to 0x30000. 256 sectors = 128 KiB (fits below the kernel stack).
+# FAT12 image: built from every file in fsroot/ and written onto the floppy at
+# sector FS_LBA, where the kernel's floppy-backed FAT12 driver expects it.
+# 256 sectors = 128 KiB. FS_LBA=64 clears the boot sector + kernel budget.
 FSROOT     := fsroot
 FS_IMG     := $(BUILD)/fs.img
 FS_SECTORS := 256
+FS_LBA     := 64
 FS_FILES   := $(wildcard $(FSROOT)/*)
 
 # The kernel loads at 0x1000 and grows upward; it must end below the boot
@@ -88,13 +90,13 @@ $(BOOT_BIN): $(BOOT_SRC) $(KERNEL_BIN) | $(BUILD)
 	    echo "       Shrink the kernel, or move its load address in boot/boot.asm."; \
 	    exit 1; \
 	fi; \
-	echo "Kernel occupies $$ksize / $(MAX_KERNEL_SECTORS) sectors; assembling boot sector to load $$ksize + $(FS_SECTORS) FS."; \
-	$(NASM) -f bin -DKSECTORS=$$ksize -DFSECTORS=$(FS_SECTORS) $< -o $@
+	echo "Kernel occupies $$ksize / $(MAX_KERNEL_SECTORS) sectors; assembling boot sector."; \
+	$(NASM) -f bin -DKSECTORS=$$ksize $< -o $@
 
 # ---- FAT12 filesystem image (mkfs.fat + mcopy the fsroot/ files) ------------
 $(FS_IMG): $(FS_FILES) | $(BUILD)
 	dd if=/dev/zero of=$@ bs=512 count=$(FS_SECTORS) status=none
-	mkfs.fat -F 12 -n PUMPKIN $@ >/dev/null
+	mkfs.fat -F 12 -s 1 -r 32 -n PUMPKIN $@ >/dev/null
 	@for f in $(FS_FILES); do \
 	    dest=$$(basename "$$f" | tr 'a-z' 'A-Z'); \
 	    MTOOLS_SKIP_CHECK=1 mcopy -i $@ "$$f" "::$$dest"; \
@@ -122,14 +124,13 @@ $(KERNEL_BIN): $(KERNEL_ELF)
 	$(OBJCOPY) -O binary $< $@
 
 # ---- assemble the floppy image ----------------------------------------------
-# Layout: sector 0 = boot, sectors 1..K = kernel, sectors K+1.. = FAT12 image.
+# Layout: sector 0 = boot, sectors 1..K = kernel, sectors $(FS_LBA).. = FAT12.
 $(IMG): $(BOOT_BIN) $(KERNEL_BIN) $(FS_IMG)
-	@ksize=$$(( ($$(wc -c < $(KERNEL_BIN)) + 511) / 512 )); \
-	dd if=/dev/zero of=$(IMG) bs=512 count=2880 status=none; \
-	dd if=$(BOOT_BIN)   of=$(IMG) conv=notrunc status=none; \
-	dd if=$(KERNEL_BIN) of=$(IMG) seek=1 conv=notrunc status=none; \
-	dd if=$(FS_IMG)     of=$(IMG) seek=$$(( 1 + ksize )) conv=notrunc status=none; \
-	echo "Built $(IMG) (1.44 MB floppy: boot + kernel@1 + FAT12@$$(( 1 + ksize )))."
+	dd if=/dev/zero of=$(IMG) bs=512 count=2880 status=none
+	dd if=$(BOOT_BIN)   of=$(IMG) conv=notrunc status=none
+	dd if=$(KERNEL_BIN) of=$(IMG) seek=1 conv=notrunc status=none
+	dd if=$(FS_IMG)     of=$(IMG) seek=$(FS_LBA) conv=notrunc status=none
+	@echo "Built $(IMG) (1.44 MB floppy: boot + kernel@1 + FAT12@$(FS_LBA))."
 
 $(BUILD):
 	mkdir -p $(BUILD)

@@ -15,6 +15,7 @@
 #include "pic.h"
 #include "timer.h"
 #include "keyboard.h"
+#include "floppy.h"
 #include "sched.h"
 #include "fat12.h"
 #include "shell.h"
@@ -79,10 +80,28 @@ void kernel_main(void) {
     console_write("ok\n");
 
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  Starting scheduler + demo tasks .... ... ");
+    sched_init();                 /* this boot context becomes task 0 */
+    shell_spawn_demo_tasks();     /* two background worker threads */
+    console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+    console_write("ok\n");
+
+    /* Everything is in place - turn on interrupts (preemption starts now). */
+    __asm__ volatile("sti");
+
+    /* The floppy driver needs interrupts (it waits on IRQ6 and uses the timer
+     * for motor spin-up), so bring it and the filesystem up after 'sti'. */
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  Resetting floppy controller ........ ... ");
+    floppy_init();
+    console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+    console_write("ok\n");
+
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     console_write("  Mounting FAT12 filesystem .......... ... ");
     int files = fs_init();
-    console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
     if (files >= 0) {
+        console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
         console_write("ok");
         console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
         console_write("  (");
@@ -92,16 +111,6 @@ void kernel_main(void) {
         console_set_color(VGA_YELLOW, VGA_BLACK);
         console_write("none\n");
     }
-
-    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
-    console_write("  Starting scheduler + demo tasks .... ... ");
-    sched_init();                 /* this boot context becomes task 0 */
-    shell_spawn_demo_tasks();     /* two background worker threads */
-    console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
-    console_write("ok\n");
-
-    /* Everything is in place - turn on interrupts (preemption starts now). */
-    __asm__ volatile("sti");
 
     console_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
     console_write("\n  Type 'help' to get started.\n\n");

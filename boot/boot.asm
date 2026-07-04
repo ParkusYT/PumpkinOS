@@ -24,17 +24,6 @@ KERNEL_OFFSET   equ 0x1000      ; where we load the kernel in memory
 %endif
 KERNEL_SECTORS  equ KSECTORS
 
-; The FAT12 filesystem image is stored on the floppy right after the kernel and
-; loaded to physical 0x30000 as a RAM disk, so the protected-mode kernel can
-; read files from memory without a floppy driver. FSECTORS is passed by the
-; build (nasm -DFSECTORS=<n>); its start LBA is right after the kernel.
-%ifndef FSECTORS
-%define FSECTORS 0
-%endif
-FS_SECTORS      equ FSECTORS
-FS_START_LBA    equ 1 + KERNEL_SECTORS
-RAMDISK_SEG     equ 0x3000     ; 0x3000:0000 = physical 0x30000
-
 ; The BIOS memory map (INT 15h, EAX=E820) is gathered here in real mode and
 ; left in low memory for the kernel to read once it is in protected mode:
 ;   0x0500 : dword           number of entries
@@ -60,21 +49,12 @@ start:
     mov si, msg_load
     call print_string
 
-    ; ---- load the kernel to 0x1000 ----
+    ; ---- load the kernel to 0x1000 (the kernel reads the FAT12 filesystem
+    ;      itself, off the real floppy, via its FDC driver) ----
     mov word [lba], 1
     mov word [sectors_left], KERNEL_SECTORS
     mov word [dest_seg], KERNEL_OFFSET >> 4
     call load_sectors
-
-    ; ---- load the FAT12 RAM disk to 0x30000 (skip if empty) ----
-    cmp word [fs_sectors_cfg], 0
-    je .no_fs
-    mov word [lba], FS_START_LBA
-    mov ax, [fs_sectors_cfg]
-    mov [sectors_left], ax
-    mov word [dest_seg], RAMDISK_SEG
-    call load_sectors
-.no_fs:
 
     call enable_a20
 
@@ -287,7 +267,6 @@ dest_seg       dw 0
 cylinder       db 0
 head           db 0
 sector         db 0
-fs_sectors_cfg dw FS_SECTORS
 
 msg_load     db "Loading PumpkinOS...", 13, 10, 0
 msg_disk_err db "DISK ERROR!", 13, 10, 0

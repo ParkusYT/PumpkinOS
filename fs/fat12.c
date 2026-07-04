@@ -1,84 +1,116 @@
 /* ===========================================================================
- * PumpkinOS - FAT12 filesystem (read-only)
+ * PumpkinOS - FAT12 filesystem (read-only, over the real floppy)
+ * ---------------------------------------------------------------------------
+ * The FAT12 volume lives on the floppy starting at a fixed sector (after the
+ * boot sector and the kernel). This driver reads it through the floppy
+ * controller: it caches the BPB, the FAT, and the root directory at mount
+ * time, and streams file data straight off the disk on demand.
  * ========================================================================= */
 #include "fat12.h"
+#include "floppy.h"
 #include "console.h"
+#include "kheap.h"
 #include "string.h"
 #include <stdint.h>
 
-/* Must match RAMDISK_SEG in boot/boot.asm (0x3000:0 = physical 0x30000). */
-#define RAMDISK_BASE 0x30000u
+/* Where the FAT12 volume begins on the floppy (must match the Makefile's dd
+ * seek): sector 0 = boot, 1..48 = kernel budget, so 64 leaves a safe gap. */
+#define FS_BASE_LBA 64u
 
 #define ATTR_LFN    0x0F
 #define ATTR_VOLUME 0x08
 #define ATTR_DIR    0x10
 
-static uint8_t *disk;                /* base of the in-memory FAT12 image */
 static uint16_t bytes_per_sector;
 static uint8_t  sectors_per_cluster;
 static uint16_t reserved_sectors;
 static uint8_t  num_fats;
 static uint16_t root_entries;
 static uint16_t sectors_per_fat;
-static uint32_t fat_start;           /* sector of the first FAT           */
-static uint32_t root_start;          /* sector of the root directory      */
-static uint32_t data_start;          /* sector of cluster 2               */
+static uint32_t fat_start;           /* volume-relative sector of FAT 1     */
+static uint32_t root_start;          /* volume-relative sector of root dir  */
+static uint32_t root_sectors;
+static uint32_t data_start;          /* volume-relative sector of cluster 2 */
+
+static uint8_t *fat_cache;           /* whole FAT, cached at mount time     */
+static uint8_t *root_cache;          /* whole root directory                */
+static uint8_t *cluster_buf;         /* one-cluster scratch for reads       */
 static int      mounted;
 
-static uint16_t rd16(uint32_t off) {
-    return (uint16_t)(disk[off] | (disk[off + 1] << 8));
+static uint16_t rd16(const uint8_t *p, uint32_t off) {
+    return (uint16_t)(p[off] | (p[off + 1] << 8));
 }
 
-static uint8_t *sector_ptr(uint32_t lba) {
-    return disk + lba * bytes_per_sector;
+/* Read 'count' volume-relative sectors into buf via the floppy driver. */
+static int read_fs(uint32_t fs_lba, uint32_t count, uint8_t *buf) {
+    for (uint32_t i = 0; i < count; i++)
+        if (floppy_read_sector(FS_BASE_LBA + fs_lba + i, buf + i * 512) != 0)
+            return -1;
+    return 0;
 }
 
-/* The 12-bit FAT entry for a cluster (clusters are packed 1.5 bytes each). */
+/* The 12-bit FAT entry for a cluster (entries are packed 1.5 bytes each). */
 static uint16_t fat_entry(uint16_t cluster) {
-    uint32_t off = fat_start * bytes_per_sector + cluster + (cluster / 2);
-    uint16_t v = (uint16_t)(disk[off] | (disk[off + 1] << 8));
+    uint32_t off = cluster + (cluster / 2);
+    uint16_t v = (uint16_t)(fat_cache[off] | (fat_cache[off + 1] << 8));
     return (cluster & 1) ? (v >> 4) : (v & 0x0FFF);
 }
 
 int fs_mounted(void) { return mounted; }
 
 int fs_init(void) {
-    disk    = (uint8_t *)RAMDISK_BASE;
     mounted = 0;
 
-    bytes_per_sector    = rd16(11);
-    sectors_per_cluster = disk[13];
-    reserved_sectors    = rd16(14);
-    num_fats            = disk[16];
-    root_entries        = rd16(17);
-    sectors_per_fat     = rd16(22);
-
-    /* Basic sanity: a real FAT12 boot sector for us has 512-byte sectors. */
-    if (bytes_per_sector != 512 || sectors_per_cluster == 0 ||
-        num_fats == 0 || num_fats > 2)
+    uint8_t bpb[512];
+    if (floppy_read_sector(FS_BASE_LBA, bpb) != 0) {
+        floppy_motor_off();
         return -1;
+    }
 
-    fat_start  = reserved_sectors;
-    root_start = reserved_sectors + (uint32_t)num_fats * sectors_per_fat;
-    uint32_t root_sectors =
-        ((uint32_t)root_entries * 32 + bytes_per_sector - 1) / bytes_per_sector;
-    data_start = root_start + root_sectors;
-    mounted    = 1;
+    bytes_per_sector    = rd16(bpb, 11);
+    sectors_per_cluster = bpb[13];
+    reserved_sectors    = rd16(bpb, 14);
+    num_fats            = bpb[16];
+    root_entries        = rd16(bpb, 17);
+    sectors_per_fat     = rd16(bpb, 22);
 
-    /* Count the files so the caller can report it. */
+    if (bytes_per_sector != 512 || sectors_per_cluster == 0 ||
+        num_fats == 0 || num_fats > 2) {
+        floppy_motor_off();
+        return -1;
+    }
+
+    fat_start    = reserved_sectors;
+    root_start   = reserved_sectors + (uint32_t)num_fats * sectors_per_fat;
+    root_sectors = ((uint32_t)root_entries * 32 + bytes_per_sector - 1) / bytes_per_sector;
+    data_start   = root_start + root_sectors;
+
+    /* Cache the FAT and the root directory (small; heap-allocated). */
+    fat_cache   = (uint8_t *)kmalloc((uint32_t)sectors_per_fat * 512);
+    root_cache  = (uint8_t *)kmalloc(root_sectors * 512);
+    cluster_buf = (uint8_t *)kmalloc((uint32_t)sectors_per_cluster * 512);
+    if (!fat_cache || !root_cache || !cluster_buf) {
+        floppy_motor_off();
+        return -1;
+    }
+    if (read_fs(fat_start, sectors_per_fat, fat_cache) != 0 ||
+        read_fs(root_start, root_sectors, root_cache) != 0) {
+        floppy_motor_off();
+        return -1;
+    }
+    floppy_motor_off();
+    mounted = 1;
+
     int files = 0;
-    uint8_t *dir = sector_ptr(root_start);
     for (uint32_t i = 0; i < root_entries; i++) {
-        uint8_t *e = dir + i * 32;
+        uint8_t *e = root_cache + i * 32;
         if (e[0] == 0x00) break;
-        if (e[0] == 0xE5 || e[11] == ATTR_LFN || (e[11] & ATTR_VOLUME))
-            continue;
+        if (e[0] == 0xE5 || e[11] == ATTR_LFN || (e[11] & ATTR_VOLUME)) continue;
         files++;
     }
     return files;
 }
 
-/* Format an 8.3 directory entry name into "NAME.EXT". */
 static void format_name(const uint8_t *e, char *out) {
     int n = 0;
     for (int j = 0; j < 8 && e[j] != ' '; j++)
@@ -97,15 +129,11 @@ void fs_list(void) {
         return;
     }
 
-    uint8_t *dir = sector_ptr(root_start);
     int files = 0;
-
     for (uint32_t i = 0; i < root_entries; i++) {
-        uint8_t *e = dir + i * 32;
-        if (e[0] == 0x00)
-            break;                        /* end of directory */
-        if (e[0] == 0xE5 || e[11] == ATTR_LFN || (e[11] & ATTR_VOLUME))
-            continue;                     /* deleted / long name / volume label */
+        uint8_t *e = root_cache + i * 32;
+        if (e[0] == 0x00) break;
+        if (e[0] == 0xE5 || e[11] == ATTR_LFN || (e[11] & ATTR_VOLUME)) continue;
 
         char name[13];
         format_name(e, name);
@@ -162,17 +190,15 @@ int fs_cat(const char *name) {
     uint8_t want[11];
     to_83(name, want);
 
-    uint8_t *dir = sector_ptr(root_start);
     for (uint32_t i = 0; i < root_entries; i++) {
-        uint8_t *e = dir + i * 32;
-        if (e[0] == 0x00)
-            break;
+        uint8_t *e = root_cache + i * 32;
+        if (e[0] == 0x00) break;
         if (e[0] == 0xE5 || e[11] == ATTR_LFN || (e[11] & (ATTR_VOLUME | ATTR_DIR)))
             continue;
         if (memcmp(e, want, 11) != 0)
             continue;
 
-        /* Found it: follow the cluster chain, streaming its bytes. */
+        /* Found it: walk the cluster chain, reading each cluster off the disk. */
         uint16_t cluster = (uint16_t)(e[26] | (e[27] << 8));
         uint32_t remaining = e[28] | (e[29] << 8) | (e[30] << 16) |
                              ((uint32_t)e[31] << 24);
@@ -181,13 +207,17 @@ int fs_cat(const char *name) {
 
         while (cluster >= 2 && cluster < 0xFF8 && remaining > 0 && guard++ < 4096) {
             uint32_t lba = data_start + (uint32_t)(cluster - 2) * sectors_per_cluster;
-            uint8_t *cp = sector_ptr(lba);
+            if (read_fs(lba, sectors_per_cluster, cluster_buf) != 0) {
+                console_write("\ncat: read error\n");
+                break;
+            }
             uint32_t n = remaining < cluster_bytes ? remaining : cluster_bytes;
             for (uint32_t k = 0; k < n; k++)
-                console_putc((char)cp[k]);
+                console_putc((char)cluster_buf[k]);
             remaining -= n;
             cluster = fat_entry(cluster);
         }
+        floppy_motor_off();
         return 0;
     }
     return -1;                            /* not found */
