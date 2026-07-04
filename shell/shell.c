@@ -72,7 +72,7 @@ static void cmd_help(void) {
     console_write("  write <f> <t> create/overwrite file <f> with text <t>\n");
     console_write("  touch <file>  create an empty file\n");
     console_write("  mkdir <name>  create a directory\n");
-    console_write("  rm <file>     delete a file\n");
+    console_write("  rm [-r] <f>   delete a file (or a tree with -r)\n");
     console_write("  rmdir <dir>   delete an empty directory\n");
     console_write("  banner        draw the PumpkinOS banner\n");
     console_write("  about         about PumpkinOS\n");
@@ -443,10 +443,18 @@ static void cmd_touch(const char *args) {
 }
 
 static void cmd_rm(const char *args) {
-    if (args[0] == '\0') { console_write("usage: rm <file>\n"); return; }
-    if (fs_remove(args) != 0) {
+    int recursive = 0;
+    if (args[0] == '-' && args[1] == 'r' && (args[2] == ' ' || args[2] == '\0')) {
+        recursive = 1;
+        args += 2;
+        while (*args == ' ') args++;
+    }
+    if (args[0] == '\0') { console_write("usage: rm [-r] <file>\n"); return; }
+
+    int rc = recursive ? fs_rmrf(args) : fs_remove(args);
+    if (rc != 0) {
         console_set_color(VGA_LIGHT_RED, VGA_BLACK);
-        console_write("rm: file not found: ");
+        console_write("rm: not found: ");
         console_write(args);
         console_putc('\n');
         console_set_color(VGA_LIGHT_GREY, VGA_BLACK);

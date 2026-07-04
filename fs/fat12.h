@@ -25,5 +25,6 @@ int  fs_create(const char *name, const char *data, uint32_t len);  /* write/touc
 int  fs_mkdir(const char *name);        /* mkdir */
 int  fs_remove(const char *name);       /* rm (files only) */
 int  fs_rmdir(const char *name);        /* rmdir (empty directories) */
+int  fs_rmrf(const char *name);         /* rm -r (file or directory tree) */
 
 #endif /* PUMPKIN_FAT12_H */

@@ -530,6 +530,56 @@ empty:
     return 0;
 }
 
+/* ---- rm -r (recursive delete) --------------------------------------------- */
+/* Free everything inside a directory (recursing into subdirectories). The
+ * caller frees the directory's own cluster chain afterwards. */
+static void rmrf_cluster(uint16_t dir_cluster, int depth) {
+    if (depth > 32) return;                     /* runaway guard */
+    uint8_t sec[512];
+    for (uint32_t idx = 0; ; idx++) {
+        uint32_t lba = dir_sector_lba(dir_cluster, idx);
+        if (lba == 0) return;
+        if (read_fs(lba, 1, sec) != 0) return;
+        for (int e = 0; e < 16; e++) {
+            uint8_t *ent = sec + e * 32;
+            if (ent[0] == 0x00) return;
+            if (ent[0] == 0xE5 || ent[11] == ATTR_LFN) continue;
+            if (ent[0] == '.') continue;        /* '.' and '..' */
+            uint16_t c = (uint16_t)(ent[26] | (ent[27] << 8));
+            if (ent[11] & ATTR_DIR)
+                rmrf_cluster(c, depth + 1);
+            free_chain(c);
+        }
+    }
+}
+
+int fs_rmrf(const char *name) {
+    if (!mounted) return -1;
+    if (strcmp(name, ".") == 0 || strcmp(name, "..") == 0) {
+        console_write("rm: refusing to remove '.' or '..'\n");
+        return 0;
+    }
+
+    uint8_t name83[11];
+    to_83(name, name83);
+    uint32_t lba, off;
+    uint8_t ent[32];
+    if (!dir_find(cwd_cluster, name83, &lba, &off, ent)) { floppy_motor_off(); return -1; }
+
+    uint16_t c = (uint16_t)(ent[26] | (ent[27] << 8));
+    if (ent[11] & ATTR_DIR)
+        rmrf_cluster(c, 0);
+    free_chain(c);
+    fat_flush();
+
+    uint8_t sec[512];
+    read_fs(lba, 1, sec);
+    sec[off] = 0xE5;
+    write_fs(lba, 1, sec);
+    floppy_motor_off();
+    return 0;
+}
+
 /* ---- cd / pwd ------------------------------------------------------------- */
 static void path_push(const char *name) {
     uint32_t l = strlen(cwd_path);
