@@ -17,9 +17,10 @@ void floppy_init(void);
 /* IRQ6 handler: records that the controller finished a command. */
 void floppy_irq(void);
 
-/* Read one LBA sector (512 bytes) into buf. Returns 0 on success, -1 on error.
- * Leaves the motor spinning; call floppy_motor_off() when done with a batch. */
+/* Read/write one LBA sector (512 bytes). Return 0 on success, -1 on error.
+ * Both leave the motor spinning; call floppy_motor_off() when done. */
 int floppy_read_sector(uint32_t lba, uint8_t *buf);
+int floppy_write_sector(uint32_t lba, const uint8_t *buf);
 
 /* Stop the drive motor. */
 void floppy_motor_off(void);

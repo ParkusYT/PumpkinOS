@@ -64,8 +64,14 @@ static void cmd_help(void) {
     console_write("  help          show this help\n");
     console_write("  clear, cls    clear the screen\n");
     console_write("  echo <text>   print <text>\n");
-    console_write("  ls            list files on the FAT12 disk\n");
+    console_write("  ls            list the current directory\n");
+    console_write("  cd <dir>      change directory (.. and / work)\n");
+    console_write("  pwd           print the working directory\n");
     console_write("  cat <file>    print a file's contents\n");
+    console_write("  write <f> <t> create/overwrite file <f> with text <t>\n");
+    console_write("  touch <file>  create an empty file\n");
+    console_write("  mkdir <name>  create a directory\n");
+    console_write("  rm <file>     delete a file\n");
     console_write("  banner        draw the PumpkinOS banner\n");
     console_write("  about         about PumpkinOS\n");
     console_write("  colors        show the VGA colour palette\n");
@@ -402,6 +408,50 @@ static void cmd_cat(const char *args) {
     }
 }
 
+static void cmd_cd(const char *args) {
+    fs_cd(args[0] ? args : "/");
+}
+
+static void cmd_mkdir(const char *args) {
+    if (args[0] == '\0') { console_write("usage: mkdir <name>\n"); return; }
+    fs_mkdir(args);
+}
+
+static void cmd_touch(const char *args) {
+    if (args[0] == '\0') { console_write("usage: touch <name>\n"); return; }
+    fs_create(args, "", 0);
+}
+
+static void cmd_rm(const char *args) {
+    if (args[0] == '\0') { console_write("usage: rm <file>\n"); return; }
+    if (fs_remove(args) != 0) {
+        console_set_color(VGA_LIGHT_RED, VGA_BLACK);
+        console_write("rm: file not found: ");
+        console_write(args);
+        console_putc('\n');
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    }
+}
+
+/* write <file> <text> - create/overwrite a file with the given text. */
+static void cmd_write(char *args) {
+    if (args[0] == '\0') { console_write("usage: write <file> <text>\n"); return; }
+    char *content = args;
+    while (*content && *content != ' ')
+        content++;                        /* skip the filename */
+    if (*content) {
+        *content = '\0';                  /* terminate the name */
+        content++;
+    }
+
+    static char buf[LINE_MAX + 2];
+    uint32_t n = 0;
+    for (char *p = content; *p && n < sizeof(buf) - 1; p++)
+        buf[n++] = *p;
+    buf[n++] = '\n';                      /* end the file with a newline */
+    fs_create(args, buf, n);
+}
+
 static void cmd_reboot(void) {
     console_write("Rebooting...\n");
     /* Pulse the CPU reset line via the 8042 keyboard controller. */
@@ -457,6 +507,18 @@ static void shell_execute(char *line) {
         cmd_ls();
     else if (strcmp(cmd, "cat") == 0 || strcmp(cmd, "type") == 0)
         cmd_cat(args);
+    else if (strcmp(cmd, "cd") == 0)
+        cmd_cd(args);
+    else if (strcmp(cmd, "pwd") == 0)
+        fs_pwd();
+    else if (strcmp(cmd, "mkdir") == 0)
+        cmd_mkdir(args);
+    else if (strcmp(cmd, "write") == 0)
+        cmd_write(args);
+    else if (strcmp(cmd, "touch") == 0)
+        cmd_touch(args);
+    else if (strcmp(cmd, "rm") == 0 || strcmp(cmd, "del") == 0)
+        cmd_rm(args);
     else if (strcmp(cmd, "banner") == 0) {
         shell_banner();
         console_putc('\n');
@@ -500,14 +562,21 @@ static void shell_execute(char *line) {
     }
 }
 
+/* Print the prompt, including the current working directory. */
+static void print_prompt(void) {
+    console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+    console_write("pksh:");
+    console_write(fs_cwd());
+    console_write("> ");
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+}
+
 /* ---- the read-eval-print loop --------------------------------------------- */
 void shell_run(void) {
     static char line[LINE_MAX];
     size_t len = 0;
 
-    console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
-    console_write(PROMPT);
-    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    print_prompt();
 
     for (;;) {
         char c = keyboard_getchar();
@@ -517,8 +586,7 @@ void shell_run(void) {
             line[len] = '\0';
             shell_execute(line);
             len = 0;
-            console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
-            console_write(PROMPT);
+            print_prompt();
             console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
         } else if (c == '\b') {
             if (len > 0) {

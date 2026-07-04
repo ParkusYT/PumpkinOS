@@ -1,27 +1,28 @@
 /* ===========================================================================
- * PumpkinOS - FAT12 filesystem (read-only, over the boot RAM disk)
- * ---------------------------------------------------------------------------
- * The bootloader copies a small FAT12 image off the floppy into memory at
- * 0x30000. This driver parses its BPB and walks the FAT / root directory to
- * list files and stream their contents - no disk driver needed.
+ * PumpkinOS - FAT12 filesystem (read + write, with directories)
  * ========================================================================= */
 #ifndef PUMPKIN_FAT12_H
 #define PUMPKIN_FAT12_H
 
 #include <stdint.h>
 
-/* Mount the RAM-disk filesystem. Returns the number of files in the root
+/* Mount the floppy's FAT12 volume. Returns the number of entries in the root
  * directory, or -1 if no valid FAT12 image is present. */
-int fs_init(void);
+int  fs_init(void);
+int  fs_mounted(void);
 
-/* Non-zero once a filesystem is mounted. */
-int fs_mounted(void);
+/* The current working directory path (for the prompt / 'pwd'). */
+const char *fs_cwd(void);
 
-/* List the root directory (the shell's 'ls'). */
-void fs_list(void);
+/* Directory listing and navigation. */
+void fs_list(void);                     /* ls  */
+int  fs_cd(const char *name);           /* cd; 0 ok, -1 error */
+void fs_pwd(void);                      /* pwd */
 
-/* Print a file's contents (the shell's 'cat'). Returns 0 on success,
- * -1 if the file was not found. Name matching is case-insensitive. */
-int fs_cat(const char *name);
+/* Reading and writing. */
+int  fs_cat(const char *name);          /* cat; -1 if not found */
+int  fs_create(const char *name, const char *data, uint32_t len);  /* write/touch */
+int  fs_mkdir(const char *name);        /* mkdir */
+int  fs_remove(const char *name);       /* rm (files only) */
 
 #endif /* PUMPKIN_FAT12_H */

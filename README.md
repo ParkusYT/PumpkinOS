@@ -12,8 +12,9 @@ physical memory manager (bitmap frame allocator over the BIOS E820 map),
 paging (identity-mapped, with a `map`/`unmap` API), a kernel heap
 (`kmalloc`/`kfree`), preemptive multitasking (round-robin kernel threads
 switched on the timer tick), user mode (ring 3 with a TSS and an `int 0x80`
-syscall interface), a floppy disk driver (8272 FDC + ISA DMA) with a read-only
-FAT12 filesystem the kernel boots from as a file, and **PumpkinShell (PKSH)**.
+syscall interface), a floppy disk driver (8272 FDC + ISA DMA) with a read/write
+FAT12 filesystem (files and directories) the kernel boots from as a file, and
+**PumpkinShell (PKSH)**.
 
 ## What's here
 
@@ -38,11 +39,11 @@ under these directories (with each on the `-I` header path).
 | `drivers/console.{c,h}` | VGA text driver (colour, scrolling, hardware cursor) + COM1 serial mirror. |
 | `drivers/timer.{c,h}`   | PIT (8254) on IRQ0: 100 Hz system tick, uptime, `timer_sleep`. |
 | `drivers/keyboard.{c,h}`| PS/2 keyboard driver: IRQ1, scancode set 1, shift/caps, ring buffer. |
-| `drivers/floppy.{c,h}`  | Floppy disk driver: 8272 FDC + ISA DMA channel 2, IRQ6, reads sectors. |
+| `drivers/floppy.{c,h}`  | Floppy disk driver: 8272 FDC + ISA DMA channel 2, IRQ6, reads/writes sectors. |
 | `sched/sched.{c,h}`     | Round-robin scheduler: kernel threads, `task_spawn`, preemption. |
 | `sched/switch.asm`      | `context_switch` - saves/restores registers and swaps stacks. |
 | `shell/shell.{c,h}`     | PumpkinShell (PKSH): the interactive command loop.         |
-| `fs/fat12.{c,h}`        | Read-only FAT12 driver over the floppy driver (`ls`/`cat`). |
+| `fs/fat12.{c,h}`        | Read/write FAT12 driver: files, directories, `ls`/`cat`/`cd`/`mkdir`/`write`/`rm`. |
 | `user/user.asm`         | Position-independent ring-3 demo programs (run via syscalls). |
 | `lib/string.{c,h}`      | Freestanding `memset`/`memcpy`/`strcmp`/…                  |
 | `fsroot/`               | Files copied into the FAT12 image at build time.          |
@@ -55,8 +56,14 @@ under these directories (with each on the `-I` header path).
 help          list the built-in commands
 clear, cls    clear the screen
 echo <text>   print <text>
-ls            list files on the FAT12 disk
+ls            list the current directory
+cd <dir>      change directory (`..` and `/` work)
+pwd           print the working directory
 cat <file>    print a file's contents (case-insensitive name)
+write <f> <t> create/overwrite file <f> with text <t>
+touch <file>  create an empty file
+mkdir <name>  create a directory
+rm <file>     delete a file
 banner        draw the PumpkinOS banner
 about         about PumpkinOS
 colors        show the 16-colour VGA palette
@@ -212,17 +219,27 @@ for the drive's **IRQ 6**; the sector arrives in memory by DMA. Because that
 needs interrupts (IRQ 6) and the timer (motor spin-up), the driver and
 filesystem come up *after* `sti`.
 
-`fs/fat12.c` mounts the volume by caching the BPB, the FAT and the root
-directory, then serves:
+`fs/fat12.c` mounts the volume by caching the FAT in memory (flushed back to
+both on-disk copies whenever it changes); directory sectors and file data are
+read-modify-written on demand. It supports the root directory and
+subdirectories, with a current working directory shown in the prompt:
 
-- `ls` - list the root directory with file sizes (including `KERNEL.BIN`).
-- `cat <file>` - walk the file's cluster chain (looking each next cluster up in
-  the cached FAT) and stream it off the disk. Names match case-insensitively
-  against the 8.3 entries.
+- `ls` / `cd` / `pwd` - list and walk directories (`.`, `..`, `/`).
+- `cat <file>` - stream a file off the disk, following its cluster chain.
+- `write <f> <t>` / `touch` - allocate clusters, write the data, and add a
+  directory entry.
+- `mkdir <name>` - allocate a cluster, seed it with `.`/`..` entries, and link
+  it into the parent.
+- `rm <file>` - free the cluster chain and mark the entry deleted.
 
-To add files, drop them in `fsroot/` and rebuild - `make` reformats the volume,
-copies `KERNEL.BIN` and your files in, and overlays the boot sector. (The
-filesystem is read-only from inside PumpkinOS.)
+Everything is written straight to the floppy, so changes **persist across
+reboots** and the disk stays a valid FAT12 volume - you can create a file in
+PumpkinOS and read it back on Linux with `mtype`/`mdir`. (Directory-entry
+timestamps are left at zero; there is no real-time clock yet.)
+
+Files placed in `fsroot/` are copied into the volume at build time; `make`
+formats the disk, copies `KERNEL.BIN` and those files in, and overlays the boot
+sector.
 
 ## Memory layout (physical)
 
@@ -271,11 +288,11 @@ hardware. The image is a standard 1.44 MB raw floppy.)
   preemptive multitasking, ring-3 user mode + syscalls, a FAT12 filesystem, and
   the shell. Natural next steps: an **ELF loader** so ring-3 programs can be
   read from the FAT12 disk and executed on demand (instead of being baked into
-  the kernel), then a **write path** for the filesystem, and an ATA/IDE driver
-  so PumpkinOS can also use a hard disk.
-- Known simplifications: the filesystem is read-only and the floppy driver only
-  reads (no write, single drive); dead tasks leak their stack/TCB (no reaper);
-  all tasks share one address space; user pages are not freed on exit.
+  the kernel), then an ATA/IDE driver so PumpkinOS can also use a hard disk.
+- Known simplifications: the FAT12 driver has no long-file-name or timestamp
+  support and `rm` only removes files (not directories); dead tasks leak their
+  stack/TCB (no reaper); all tasks share one address space; user pages are not
+  freed on exit.
 - `KERNEL.BIN` loads at 0x10000 and grows toward the floppy DMA buffer at
   0x80000, so it can be up to ~448 KiB (capped at 512 sectors / 256 KiB in the
   Makefile; currently ~43). Plenty of headroom.

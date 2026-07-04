@@ -24,7 +24,8 @@
 #define CMD_RECALIBRATE 0x07
 #define CMD_SENSE_INT   0x08
 #define CMD_SEEK        0x0F
-#define CMD_READ        0xE6   /* read data + MT + MFM + SK */
+#define CMD_READ        0xE6   /* read data  + MT + MFM + SK */
+#define CMD_WRITE       0xC5   /* write data + MT + MFM      */
 
 /* 1.44 MB geometry. */
 #define SPT   18
@@ -142,8 +143,9 @@ void floppy_init(void) {
     floppy_motor_off();
 }
 
-/* Program ISA DMA channel 2 to receive one sector into DMA_BUFFER. */
-static void dma_prepare(void) {
+/* Program ISA DMA channel 2 for one sector. write=0 receives (dev->mem, read),
+ * write=1 transmits (mem->dev, write). */
+static void dma_prepare(int write) {
     uint32_t addr  = DMA_BUFFER;
     uint16_t count = 512 - 1;
 
@@ -155,11 +157,12 @@ static void dma_prepare(void) {
     outb(0x0C, 0xFF);
     outb(0x05, (uint8_t)(count & 0xFF));
     outb(0x05, (uint8_t)((count >> 8) & 0xFF));
-    outb(0x0B, 0x46);                  /* single, read (dev->mem), channel 2 */
+    outb(0x0B, write ? 0x4A : 0x46);   /* single, channel 2, read/write mem */
     outb(0x0A, 0x02);                  /* unmask channel 2             */
 }
 
-int floppy_read_sector(uint32_t lba, uint8_t *buf) {
+/* Shared read/write of one sector. */
+static int floppy_rw(uint32_t lba, uint8_t *buf, int write) {
     uint8_t sector = (uint8_t)(lba % SPT) + 1;
     uint8_t head   = (uint8_t)((lba / SPT) % HEADS);
     uint8_t cyl    = (uint8_t)((lba / SPT) / HEADS);
@@ -170,10 +173,12 @@ int floppy_read_sector(uint32_t lba, uint8_t *buf) {
         if (seek(cyl, head) != 0)
             continue;
 
-        dma_prepare();
+        if (write)
+            memcpy((void *)DMA_BUFFER, buf, 512);
+        dma_prepare(write);
         irq_fired = 0;
 
-        fdc_write(CMD_READ);
+        fdc_write(write ? CMD_WRITE : CMD_READ);
         fdc_write((uint8_t)((head << 2)));   /* head << 2 | drive 0 */
         fdc_write(cyl);
         fdc_write(head);
@@ -195,10 +200,19 @@ int floppy_read_sector(uint32_t lba, uint8_t *buf) {
         (void)fdc_read();                    /* size */
 
         if ((st0 & 0xC0) == 0) {             /* IC = normal termination */
-            memcpy(buf, (const void *)DMA_BUFFER, 512);
+            if (!write)
+                memcpy(buf, (const void *)DMA_BUFFER, 512);
             return 0;
         }
         recalibrate();                       /* error: recalibrate and retry */
     }
     return -1;
+}
+
+int floppy_read_sector(uint32_t lba, uint8_t *buf) {
+    return floppy_rw(lba, buf, 0);
+}
+
+int floppy_write_sector(uint32_t lba, const uint8_t *buf) {
+    return floppy_rw(lba, (uint8_t *)buf, 1);
 }
