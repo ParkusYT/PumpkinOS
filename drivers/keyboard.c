@@ -83,14 +83,19 @@ void keyboard_init(void) {
 void keyboard_irq(void) {
     uint8_t sc = inb(PS2_DATA);
 
-    /* 0xE0 introduces an "extended" key (arrows, right ctrl, ...). We don't
-     * map those yet, so remember the prefix and skip the following byte. */
+    /* 0xE0 introduces an "extended" key (arrows, etc.). We deliver the up and
+     * down arrows (as KEY_UP/KEY_DOWN) for the shell's history; the rest are
+     * dropped for now. */
     if (sc == 0xE0) {
         extended = 1;
         return;
     }
     if (extended) {
         extended = 0;
+        if (!(sc & 0x80)) {          /* press only */
+            if (sc == 0x48) kbd_enqueue(KEY_UP);
+            else if (sc == 0x50) kbd_enqueue(KEY_DOWN);
+        }
         return;
     }
 

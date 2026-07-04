@@ -606,10 +606,44 @@ static void print_prompt(void) {
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
 }
 
+/* ---- command history (recalled with the up/down arrows) ------------------- */
+#define HIST_SIZE 16
+static char hist[HIST_SIZE][LINE_MAX];
+static int  hist_n;        /* number of stored commands (<= HIST_SIZE) */
+static int  hist_next;     /* ring write position */
+
+static void hist_add(const char *cmd) {
+    if (cmd[0] == '\0') return;
+    size_t n = 0;
+    while (cmd[n] && n < LINE_MAX - 1) { hist[hist_next][n] = cmd[n]; n++; }
+    hist[hist_next][n] = '\0';
+    hist_next = (hist_next + 1) % HIST_SIZE;
+    if (hist_n < HIST_SIZE) hist_n++;
+}
+
+/* view 0 = most recent ... hist_n-1 = oldest. */
+static const char *hist_get(int view) {
+    int idx = (hist_next - 1 - view + HIST_SIZE * 2) % HIST_SIZE;
+    return hist[idx];
+}
+
+/* Erase the on-screen input line and replace it with 'text'. */
+static void replace_line(char *line, size_t *len, const char *text) {
+    while (*len > 0) { console_putc('\b'); (*len)--; }
+    size_t n = 0;
+    for (const char *p = text; *p && n < LINE_MAX - 1; p++) {
+        line[n++] = *p;
+        console_putc(*p);
+    }
+    line[n] = '\0';
+    *len = n;
+}
+
 /* ---- the read-eval-print loop --------------------------------------------- */
 void shell_run(void) {
     static char line[LINE_MAX];
     size_t len = 0;
+    int view = -1;                     /* -1 = editing a fresh line */
 
     print_prompt();
 
@@ -619,18 +653,31 @@ void shell_run(void) {
         if (c == '\n') {
             console_putc('\n');
             line[len] = '\0';
+            hist_add(line);
             shell_execute(line);
             len = 0;
+            view = -1;
             print_prompt();
-            console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
         } else if (c == '\b') {
             if (len > 0) {
                 len--;
                 console_putc('\b');   /* console erases the glyph for us */
             }
+        } else if ((unsigned char)c == KEY_UP) {
+            if (view + 1 < hist_n) {
+                view++;
+                replace_line(line, &len, hist_get(view));
+            }
+        } else if ((unsigned char)c == KEY_DOWN) {
+            if (view > 0) {
+                view--;
+                replace_line(line, &len, hist_get(view));
+            } else if (view == 0) {
+                view = -1;
+                replace_line(line, &len, "");
+            }
         } else if (c == '\t') {
-            /* treat tab as a single space for simplicity */
-            if (len < LINE_MAX - 1) {
+            if (len < LINE_MAX - 1) {   /* treat tab as a single space */
                 line[len++] = ' ';
                 console_putc(' ');
             }
