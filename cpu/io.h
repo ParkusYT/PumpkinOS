@@ -30,6 +30,18 @@ static inline uint16_t inw(uint16_t port) {
     return ret;
 }
 
+/* Write a 32-bit dword to an I/O port (used for PCI config access). */
+static inline void outl(uint16_t port, uint32_t val) {
+    __asm__ volatile("outl %0, %1" : : "a"(val), "Nd"(port));
+}
+
+/* Read a 32-bit dword from an I/O port. */
+static inline uint32_t inl(uint16_t port) {
+    uint32_t ret;
+    __asm__ volatile("inl %1, %0" : "=a"(ret) : "Nd"(port));
+    return ret;
+}
+
 /* Tiny delay by doing a throwaway write to an unused port. Some old hardware
  * needs a moment between successive commands to the PIC / PS/2 controller. */
 static inline void io_wait(void) {

@@ -10,13 +10,18 @@
 #define PS2_STATUS 0x64
 #define PS2_CMD    0x64
 
-/* Screen bounds the cursor is clamped to (matches VGA mode 13h). */
-#define SCR_W 320
-#define SCR_H 200
-
-static volatile int      mx = SCR_W / 2, my = SCR_H / 2;
+/* Screen bounds the cursor is clamped to (set by the desktop for its mode). */
+static volatile int      bound_w = 320, bound_h = 200;
+static volatile int      mx = 160, my = 100;
 static volatile int      buttons;
 static volatile uint32_t seq;
+
+void mouse_set_bounds(int w, int h) {
+    bound_w = w;
+    bound_h = h;
+    mx = w / 2;
+    my = h / 2;
+}
 
 static uint8_t  packet[3];
 static int      phase;
@@ -89,8 +94,8 @@ static void feed(uint8_t data) {
 
         int nx = mx + dx;
         int ny = my - dy;                    /* screen Y grows downward */
-        if (nx < 0) nx = 0; else if (nx >= SCR_W) nx = SCR_W - 1;
-        if (ny < 0) ny = 0; else if (ny >= SCR_H) ny = SCR_H - 1;
+        if (nx < 0) nx = 0; else if (nx >= bound_w) nx = bound_w - 1;
+        if (ny < 0) ny = 0; else if (ny >= bound_h) ny = bound_h - 1;
         mx = nx;
         my = ny;
         buttons = packet[0] & 0x07;

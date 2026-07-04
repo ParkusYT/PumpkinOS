@@ -1,35 +1,40 @@
 /* ===========================================================================
- * PumpkinOS - 2D graphics on top of the mode-13h framebuffer
+ * PumpkinOS - 2D graphics on top of the framebuffer
  * ---------------------------------------------------------------------------
- * All drawing goes to an in-RAM back buffer; gfx_present() blits the whole
- * thing to the VGA framebuffer in one go, so the screen never shows a partly
- * drawn frame (no flicker). Text uses the font snapshotted by the VGA driver
- * (8x16 glyphs).
+ * Drawing goes to an in-RAM 8-bpp (palette-indexed) back buffer sized to the
+ * current display; gfx_present() blits it to the real framebuffer in one go,
+ * converting to the framebuffer's format (direct copy at 8 bpp, palette lookup
+ * to 32-bpp for the VBE modes). Text uses the VGA driver's snapshotted font.
  * ========================================================================= */
 #ifndef PUMPKIN_GFX_H
 #define PUMPKIN_GFX_H
 
 #include <stdint.h>
 
-#define GFX_W 320
-#define GFX_H 200
-
 #define FONT_W 8
 #define FONT_H 16
+
+/* Allocate the back buffer for the current display size. 0 on success. */
+int  gfx_init(void);
+void gfx_shutdown(void);
+
+int  gfx_width(void);
+int  gfx_height(void);
+
+/* Define palette entry 'index' (r/g/b are 6-bit, 0..63). */
+void gfx_set_palette(uint8_t index, uint8_t r, uint8_t g, uint8_t b);
 
 void gfx_clear(uint8_t color);
 void gfx_pixel(int x, int y, uint8_t color);
 void gfx_fill_rect(int x, int y, int w, int h, uint8_t color);
-void gfx_rect(int x, int y, int w, int h, uint8_t color);       /* 1px border */
+void gfx_rect(int x, int y, int w, int h, uint8_t color);
 void gfx_hline(int x, int y, int w, uint8_t color);
 void gfx_vline(int x, int y, int h, uint8_t color);
 
-/* Draw one glyph / a NUL-terminated string; 'bg' < 0 means transparent. */
-void gfx_char(int x, int y, char c, uint8_t fg, int bg);
+void gfx_char(int x, int y, char c, uint8_t fg, int bg);   /* bg < 0 = transparent */
 void gfx_text(int x, int y, const char *s, uint8_t fg, int bg);
 int  gfx_text_width(const char *s);
 
-/* Push the back buffer to the screen. */
 void gfx_present(void);
 
 #endif /* PUMPKIN_GFX_H */

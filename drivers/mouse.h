@@ -18,6 +18,9 @@
 /* Enable the aux device and IRQ12. Call after idt_init()/pic_remap(). */
 void mouse_init(void);
 
+/* Set the bounds the cursor is clamped to (and recentre it). */
+void mouse_set_bounds(int w, int h);
+
 /* IRQ12 handler: assembles a packet and updates position/buttons. */
 void mouse_irq(void);
 
