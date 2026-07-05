@@ -13,6 +13,7 @@
 #include "mouse.h"
 #include "rtc.h"
 #include "acpi.h"
+#include "ac97.h"
 #include "fat12.h"
 #include "io.h"
 #include "string.h"
@@ -480,6 +481,7 @@ static void do_reboot(void) {
 }
 static void do_poweroff(void) {
     leave_graphics();
+    ac97_play_file("/system/SHUTDOWN.PCM", 1);   /* jingle, then cut power */
     acpi_poweroff();                        /* returns only if it failed */
     for (;;) __asm__ volatile("cli; hlt");
 }

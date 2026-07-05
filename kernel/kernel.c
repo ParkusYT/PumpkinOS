@@ -19,6 +19,7 @@
 #include "floppy.h"
 #include "ata.h"
 #include "acpi.h"
+#include "ac97.h"
 #include "net.h"
 #include "sched.h"
 #include "fat12.h"
@@ -167,9 +168,24 @@ void kernel_main(void) {
         console_write("none\n");
     }
 
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  Detecting AC'97 audio codec ........ ... ");
+    ac97_init();
+    if (ac97_present()) {
+        console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+        console_write("ok\n");
+    } else {
+        console_set_color(VGA_YELLOW, VGA_BLACK);
+        console_write("none\n");
+    }
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+
     console_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
     console_write("\n  Type 'help' to get started.\n\n");
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+
+    /* play the startup jingle in the background (DMA plays while we go on) */
+    ac97_play_file("/system/STARTUP.PCM", 0);
 
     shell_run();   /* never returns */
 

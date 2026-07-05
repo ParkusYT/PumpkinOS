@@ -426,6 +426,36 @@ int fs_read(const char *name, uint8_t *buf, uint32_t maxlen) {
     return (int)got;
 }
 
+int fs_read_path(const char *path, uint8_t *buf, uint32_t maxlen) {
+    if (!mounted) return -1;
+
+    /* split off the final component; everything before it is the directory */
+    const char *slash = 0;
+    for (const char *p = path; *p; p++)
+        if (*p == '/') slash = p;
+    if (!slash)
+        return fs_read(path, buf, maxlen);
+
+    char dir[128];
+    int dl = (int)(slash - path);
+    if (dl <= 0) { dir[0] = '/'; dir[1] = '\0'; }
+    else { if (dl > 126) dl = 126; memcpy(dir, path, (uint32_t)dl); dir[dl] = '\0'; }
+    const char *file = slash + 1;
+
+    /* walk into the directory, read, then restore the cwd verbatim */
+    uint16_t save_c = cwd_cluster;
+    char     save_p[sizeof(cwd_path)];
+    memcpy(save_p, cwd_path, sizeof(cwd_path));
+
+    int n = -1;
+    if (fs_cd(dir) == 0)
+        n = fs_read(file, buf, maxlen);
+
+    cwd_cluster = save_c;
+    memcpy(cwd_path, save_p, sizeof(cwd_path));
+    return n;
+}
+
 /* ---- create / touch ------------------------------------------------------- */
 int fs_create(const char *name, const char *data, uint32_t len) {
     if (!mounted) { console_write("no filesystem mounted\n"); return -1; }

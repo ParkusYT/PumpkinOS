@@ -45,6 +45,9 @@ int  fs_cat(const char *name);          /* cat; -1 if not found */
 /* Read a whole file into 'buf' (up to 'maxlen' bytes). Returns the number of
  * bytes read, or -1 if the file does not exist / is a directory / won't fit. */
 int  fs_read(const char *name, uint8_t *buf, uint32_t maxlen);
+/* Like fs_read but accepts a path with directories ("/system/FOO.PCM"). The
+ * current working directory is left unchanged. */
+int  fs_read_path(const char *path, uint8_t *buf, uint32_t maxlen);
 int  fs_create(const char *name, const char *data, uint32_t len);  /* write/touch */
 int  fs_mkdir(const char *name);        /* mkdir */
 int  fs_remove(const char *name);       /* rm (files only) */

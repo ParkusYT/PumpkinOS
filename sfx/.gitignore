@@ -1,0 +1,3 @@
+# large source audio (the small 8-bit PCMs in fsroot/system/ are generated from these)
+# regenerate: ffmpeg -i sfx/NAME.wav -ac 1 -ar 11025 -f u8 fsroot/system/NAME.PCM
+*.wav
