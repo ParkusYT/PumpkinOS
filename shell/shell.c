@@ -341,7 +341,11 @@ static void cmd_netdbg(void) {
     }
     console_write("  CMD   = "); console_write_hex(rtl8139_reg8(0x37));
     console_write("  (bit3 RxEnable, bit2 TxEnable, bit0 BufEmpty)\n");
+    console_write("  9346CR= "); console_write_hex(rtl8139_reg8(0x50));
+    console_write("  (bits7-6: 00 normal, 11 config-write)\n");
     console_write("  RCR   = "); console_write_hex(rtl8139_reg32(0x44)); console_putc('\n');
+    console_write("  RCRtst= "); console_write_hex(rtl8139_rcr_test());
+    console_write("  (RCR re-written then read back)\n");
     console_write("  TCR   = "); console_write_hex(rtl8139_reg32(0x40)); console_putc('\n');
     console_write("  RBSTRT= "); console_write_hex(rtl8139_reg32(0x30)); console_putc('\n');
     console_write("  CAPR  = "); console_write_hex(rtl8139_reg16(0x38)); console_putc('\n');

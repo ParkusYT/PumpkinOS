@@ -44,4 +44,8 @@ uint8_t  rtl8139_reg8(uint8_t off);
 uint16_t rtl8139_reg16(uint8_t off);
 uint32_t rtl8139_reg32(uint8_t off);
 
+/* Write the RX config to RCR and return the read-back (should equal ~0xE78E if
+ * RCR is writable). */
+uint32_t rtl8139_rcr_test(void);
+
 #endif /* PUMPKIN_RTL8139_H */

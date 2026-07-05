@@ -32,6 +32,10 @@
 #define CMD_TE       0x04
 #define CMD_BUFE     0x01    /* RX buffer empty */
 
+/* accept phys-match + multicast + broadcast, wrap, unlimited RX DMA burst,
+ * whole-packet RX FIFO threshold */
+#define RCR_CONFIG   (0x0Eu | (1u << 7) | (7u << 8) | (7u << 13))
+
 #define RX_BUF_SIZE  8192
 /* 8 KiB ring + 16-byte header slack + a full frame of wrap overrun. */
 static uint8_t rx_buffer[RX_BUF_SIZE + 16 + 1536] __attribute__((aligned(4)));
@@ -96,15 +100,14 @@ void rtl8139_init(void) {
     for (int i = 0; i < 8; i++)
         outb(io_base + 0x08 + i, 0xFF);
 
-    /* RCR: accept physical-match (our MAC) + multicast + broadcast (not fully
-     * promiscuous). Ring wrap, unlimited RX DMA burst, "whole packet" RX FIFO
-     * threshold. */
-    outl(io_base + REG_RCR, 0x0E | (1u << 7) | (7u << 8) | (7u << 13));
+    outl(io_base + REG_RCR, RCR_CONFIG);
     /* TCR: 2048-byte max TX DMA burst, normal interframe gap (avoids the FIFO
      * underruns a zero-config TCR can cause on real silicon). */
     outl(io_base + REG_TCR, 0x03000700u);
 
     outb(io_base + REG_CMD, CMD_RE | CMD_TE);   /* enable receiver + transmitter */
+    outl(io_base + REG_RCR, RCR_CONFIG);        /* also after enable, in case a */
+    outl(io_base + REG_TCR, 0x03000700u);       /* card only latches it then    */
 
     for (int i = 0; i < 6; i++)
         mac[i] = inb(io_base + REG_IDR0 + i);
@@ -150,16 +153,19 @@ int rtl8139_send(const void *frame, int len) {
     return 0;
 }
 
-/* Restart the receiver's ring (recovers from an RX overflow / stall). */
+/* Restart the receiver's ring (recovers from an RX overflow / stall) and
+ * re-apply the RX config, in case it was lost. */
 void rtl8139_reset_rx(void) {
     if (!present)
         return;
     outb(io_base + REG_CMD, CMD_TE);            /* receiver off */
     rx_offset = 0;
     outl(io_base + REG_RBSTART, phys_of(rx_buffer));
+    outl(io_base + REG_RCR, RCR_CONFIG);        /* the fatal one if it was 0 */
     outw(io_base + REG_CAPR, 0xFFF0);
     outw(io_base + REG_ISR, 0xFFFF);            /* clear overflow + all status */
     outb(io_base + REG_CMD, CMD_RE | CMD_TE);   /* receiver on */
+    outl(io_base + REG_RCR, RCR_CONFIG);        /* and once more with RX enabled */
 }
 
 int rtl8139_poll(void *out, int maxlen) {
@@ -207,3 +213,11 @@ uint8_t  rtl8139_msr(void)       { return present ? inb(io_base + 0x58) : 0xFF; 
 uint8_t  rtl8139_reg8(uint8_t off)  { return present ? inb(io_base + off) : 0; }
 uint16_t rtl8139_reg16(uint8_t off) { return present ? inw(io_base + off) : 0; }
 uint32_t rtl8139_reg32(uint8_t off) { return present ? inl(io_base + off) : 0; }
+
+/* Write RCR and read it straight back - tells us if RCR is writable at all. */
+uint32_t rtl8139_rcr_test(void) {
+    if (!present)
+        return 0;
+    outl(io_base + REG_RCR, RCR_CONFIG);
+    return inl(io_base + REG_RCR);
+}
