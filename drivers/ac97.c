@@ -214,10 +214,14 @@ void ac97_init(void) {
     codec_write(CODEC_MASTER_VOL, 0x0000);          /* 0 dB, unmuted */
     codec_write(CODEC_PCM_VOL,    0x0808);          /* PCM out, unmuted */
 
-    if (codec_read(CODEC_EXT_AUDIO) & 1) {          /* variable-rate audio */
-        codec_write(CODEC_EXT_CTRL, codec_read(CODEC_EXT_CTRL) | 1);
-        codec_write(CODEC_PCM_RATE, AC97_RATE);
-    }
+    /* Enable variable-rate audio and set the DAC rate to match our assets.
+     * Done UNCONDITIONALLY (not gated on a codec read): the VIA read window is
+     * pipelined, so a stale read of the VRA-support bit could skip this and
+     * leave the codec at its default 48 kHz - which plays 11025 Hz data ~4x
+     * too fast (the "high-pitched" symptom). Writes don't have that lag. */
+    codec_write(CODEC_EXT_CTRL, 0x0001);            /* VRA enable (bit0) */
+    delay_ms(1);
+    codec_write(CODEC_PCM_RATE, AC97_RATE);         /* PCM front DAC = 11025 Hz */
 
     present = 1;
 }
