@@ -463,7 +463,7 @@ void desktop_run(void) {
                 break;
         }
 
-        int scene_full = 0, scene_taskbar = 0;
+        int scene_full = 0, scene_taskbar = 0, scene_menu = 0;
         int dirty = 0, dx0 = 0, dy0 = 0, dw = 0, dh = 0;
 
         uint32_t seq = mouse_seq();
@@ -506,10 +506,10 @@ void desktop_run(void) {
                 }
             }
 
-            /* live Start-menu hover highlight */
+            /* live Start-menu hover highlight (only re-blit the menu rect) */
             if (start_open) {
                 int hv = menu_item_at(mx, my);
-                if (hv != start_hover) { start_hover = hv; scene_full = 1; }
+                if (hv != start_hover) { start_hover = hv; scene_menu = 1; }
             }
 
             prev_buttons = buttons;
@@ -531,11 +531,15 @@ void desktop_run(void) {
             if (dirty) {
                 render_scene();
                 gfx_present_rect(dx0, dy0, dw, dh);
-            } else if (scene_taskbar) {
+            } else if (scene_taskbar || scene_menu) {
                 render_scene();
-                gfx_present_rect(0, H - TB_H, W, TB_H);
-                if (cy + ch > H - TB_H)
-                    draw_cursor_fb(cx, cy);
+                if (scene_taskbar) {
+                    gfx_present_rect(0, H - TB_H, W, TB_H);
+                    if (cy + ch > H - TB_H)
+                        draw_cursor_fb(cx, cy);
+                }
+                if (scene_menu)                       /* small menu rect only */
+                    gfx_present_rect(mnu_x, mnu_y, mnu_w + 3, mnu_h + 3);
             }
             if (dirty || mx != cx || my != cy) {
                 gfx_present_rect(cx, cy, cw, ch);      /* restore under old cursor */

@@ -92,6 +92,15 @@ static void feed(uint8_t data) {
         if (packet[0] & 0x10) dx -= 256;     /* sign-extend */
         if (packet[0] & 0x20) dy -= 256;
 
+        /* Pointer acceleration: 1 mickey = 1 px crawls on a hi-res screen, so
+         * scale movement up (and more for fast flicks). Keep 1:1 at 320x200. */
+        if (bound_w >= 640) {
+            int adx = dx < 0 ? -dx : dx;
+            int ady = dy < 0 ? -dy : dy;
+            dx *= (adx > 5) ? 4 : 2;
+            dy *= (ady > 5) ? 4 : 2;
+        }
+
         int nx = mx + dx;
         int ny = my - dy;                    /* screen Y grows downward */
         if (nx < 0) nx = 0; else if (nx >= bound_w) nx = bound_w - 1;
