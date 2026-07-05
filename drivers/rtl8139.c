@@ -42,7 +42,7 @@ static uint8_t  mac[6];
 static int      present;
 static int      tx_cur;
 static int      rx_offset;
-static uint32_t tx_count, rx_count;
+static uint32_t tx_count, rx_count, tx_err;
 
 static uint32_t phys_of(const void *p) {
     return (uint32_t)(uintptr_t)p;      /* identity-mapped low memory */
@@ -122,17 +122,24 @@ int rtl8139_send(const void *frame, int len) {
         memset(tx_buffer[n] + len, 0, (uint32_t)(padded - len));
 
     outl(io_base + REG_TSAD0 + n * 4, phys_of(tx_buffer[n]));
-    outl(io_base + REG_TSD0 + n * 4, (uint32_t)padded);   /* OWN=0 starts the TX */
+    /* SIZE (bits 0-12) + early-TX threshold (bits 16-21, in 32-byte units):
+     * 0x38 => buffer up to 1792 bytes in the TX FIFO before starting, so the
+     * whole frame is staged first and the FIFO can't underrun on real silicon
+     * (a zero threshold sends corrupt frames the switch drops). OWN=0 starts. */
+    outl(io_base + REG_TSD0 + n * 4, (uint32_t)padded | (0x38u << 16));
 
-    /* Wait (briefly) for transmit-OK so the frame is really on the wire before
-     * we go looking for a reply, and the descriptor is free to reuse. */
-    for (int i = 0; i < 100000; i++) {
-        if (inl(io_base + REG_TSD0 + n * 4) & 0x8000)   /* TOK */
-            break;
+    /* Wait for transmit-OK so the frame is really on the wire (and the
+     * descriptor is free) before we poll for a reply. */
+    int ok = 0;
+    for (int i = 0; i < 400000; i++) {
+        uint32_t st = inl(io_base + REG_TSD0 + n * 4);
+        if (st & 0x8000) { ok = 1; break; }             /* TOK  */
+        if (st & ((1u << 30) | (1u << 14))) break;      /* TABT / TUN */
         io_wait();
     }
 
     tx_count++;
+    if (!ok) tx_err++;
     tx_cur = (n + 1) & 3;
     return 0;
 }
@@ -165,4 +172,5 @@ int rtl8139_poll(void *out, int maxlen) {
 
 uint32_t rtl8139_tx_count(void) { return tx_count; }
 uint32_t rtl8139_rx_count(void) { return rx_count; }
+uint32_t rtl8139_tx_err(void)   { return tx_err; }
 uint8_t  rtl8139_msr(void)      { return present ? inb(io_base + 0x58) : 0xFF; }

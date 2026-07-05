@@ -31,6 +31,7 @@ int rtl8139_poll(void *buf, int maxlen);
  * Register (bit 2 clear = link up, bit 3 set = 10 Mbps). */
 uint32_t rtl8139_tx_count(void);
 uint32_t rtl8139_rx_count(void);
+uint32_t rtl8139_tx_err(void);      /* transmits that did not report TOK */
 uint8_t  rtl8139_msr(void);
 
 #endif /* PUMPKIN_RTL8139_H */

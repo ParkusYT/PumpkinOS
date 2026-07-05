@@ -314,7 +314,13 @@ static void cmd_net(void) {
     console_write("   (MSR="); console_write_hex(msr); console_write(")\n");
     console_write("  TX / RX : ");
     console_write_dec(rtl8139_tx_count()); console_write(" / ");
-    console_write_dec(rtl8139_rx_count()); console_write(" frames\n");
+    console_write_dec(rtl8139_rx_count()); console_write(" frames");
+    if (rtl8139_tx_err()) {
+        console_write("  (");
+        console_write_dec(rtl8139_tx_err());
+        console_write(" TX errors)");
+    }
+    console_putc('\n');
 
     console_write("  status  : ");
     if (!net_up) { console_write("no IP  (run 'dhcp')\n"); return; }
