@@ -26,6 +26,7 @@
 #include "string.h"
 #include "io.h"
 #include "pci.h"
+#include "ac97.h"
 
 #define LINE_MAX    128
 
@@ -50,7 +51,7 @@ static void cmd_help(void) {
     console_write("  General : help  clear  echo <text>  banner  about\n");
     console_write("  Files   : ls  cd <d>  pwd  cat <f>  write <f> <t>  touch <f>\n");
     console_write("            mkdir <d>  rm [-r] <f>  rmdir <d>\n");
-    console_write("  System  : disks [read N]  meminfo  pci  date  uptime  sleep <s>\n");
+    console_write("  System  : disks [read N]  meminfo  pci  audio  date  uptime  sleep <s>\n");
     console_write("  Network : net  dhcp  dns <host>  ping <host>  http <host>\n");
     console_write("  Programs: run <file.elf>  desktop\n");
     console_write("  Power   : reboot  poweroff  halt\n");
@@ -647,6 +648,8 @@ static void shell_execute(char *line) {
         cmd_dns(args);
     else if (strcmp(cmd, "pci") == 0 || strcmp(cmd, "lspci") == 0)
         cmd_pci();
+    else if (strcmp(cmd, "audio") == 0)
+        ac97_debug();
     else if (strcmp(cmd, "ping") == 0)
         cmd_ping(args);
     else if (strcmp(cmd, "http") == 0)

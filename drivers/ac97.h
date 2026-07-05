@@ -20,6 +20,10 @@ void ac97_init(void);
 /* Non-zero if a supported controller was found and initialised. */
 int  ac97_present(void);
 
+/* Print controller/codec state to the console (the shell's 'audio' command),
+ * for diagnosing why sound isn't playing on real hardware. */
+void ac97_debug(void);
+
 /* Play a raw 8-bit unsigned mono PCM file (at AC97_RATE) off the disk. When
  * 'wait' is non-zero, block until playback finishes; otherwise start the DMA
  * and return immediately (the sound plays in the background). Returns 0 on

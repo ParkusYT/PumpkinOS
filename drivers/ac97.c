@@ -18,6 +18,7 @@
 #include "fat12.h"
 #include "timer.h"
 #include "string.h"
+#include "console.h"
 #include <stdint.h>
 
 /* ---- codec (mixer) registers (standard AC'97) ----------------------------- */
@@ -46,8 +47,15 @@
 #define VIA_AC97_BUSY   (1u << 24)
 #define VIA_AC97_READ   (1u << 23)
 #define VIA_AC97_PVALID (1u << 25)
-#define VIA_ACLINK_CTRL 0x41      /* PCI config byte                           */
-#define VIA_ACLINK_INIT 0xA3      /* ENABLE|PCM|SYNC|RESET(deasserted)         */
+/* AC-link control/status live in PCI config space (bytes 0x40/0x41). */
+#define VIA_ACLINK_STAT   0x40    /* bit0 = primary codec ready                */
+#define VIA_ACLINK_C00_RDY 0x01
+#define VIA_ACLINK_CTRL   0x41
+#define VIA_ACLINK_ENABLE 0x80
+#define VIA_ACLINK_RESET  0x40    /* 1 = de-assert (release) the AC-link reset */
+#define VIA_ACLINK_SYNC   0x20
+#define VIA_ACLINK_SGD    0x04
+#define VIA_ACLINK_INIT   (VIA_ACLINK_ENABLE | VIA_ACLINK_RESET | VIA_ACLINK_SGD) /* 0xC4 */
 
 enum { AC_NONE, AC_ICH, AC_VIA };
 
@@ -76,24 +84,38 @@ static void delay_ms(uint32_t ms) {
     while (timer_ticks() - start < ticks) io_wait();
 }
 
-/* ---- codec access --------------------------------------------------------- */
+/* byte-wide PCI config access (built on the dword primitive) */
+static uint8_t cfg_read8(uint8_t off) {
+    return (uint8_t)(pci_cfg_read32(bus, dev, fn, off & 0xFC) >> ((off & 3) * 8));
+}
+static void cfg_write8(uint8_t off, uint8_t val) {
+    int sh = (off & 3) * 8;
+    uint32_t v = pci_cfg_read32(bus, dev, fn, off & 0xFC);
+    v = (v & ~(0xFFu << sh)) | ((uint32_t)val << sh);
+    pci_cfg_write32(bus, dev, fn, off & 0xFC, v);
+}
+
+/* Codec (mixer) access. The VIA window can take a few microseconds; bound the
+ * spin tightly (~4 ms) so a non-responding codec can never hang the boot. */
+#define VIA_SPIN 4000
+
 static void codec_write(uint8_t reg, uint16_t val) {
     if (variant == AC_ICH) {
         outw(io_mixer + reg, val);
-    } else {
-        for (int i = 0; i < 100000 && (inl(io_bm + VIA_REG_AC97) & VIA_AC97_BUSY); i++)
-            io_wait();
-        outl(io_bm + VIA_REG_AC97, ((uint32_t)reg << 16) | val);
-        for (int i = 0; i < 100000 && (inl(io_bm + VIA_REG_AC97) & VIA_AC97_BUSY); i++)
-            io_wait();
+        return;
     }
+    for (int i = 0; i < VIA_SPIN && (inl(io_bm + VIA_REG_AC97) & VIA_AC97_BUSY); i++)
+        io_wait();
+    outl(io_bm + VIA_REG_AC97, ((uint32_t)reg << 16) | val);
+    for (int i = 0; i < VIA_SPIN && (inl(io_bm + VIA_REG_AC97) & VIA_AC97_BUSY); i++)
+        io_wait();
 }
 
 static uint16_t codec_read(uint8_t reg) {
     if (variant == AC_ICH)
         return inw(io_mixer + reg);
     outl(io_bm + VIA_REG_AC97, VIA_AC97_READ | ((uint32_t)reg << 16));
-    for (int i = 0; i < 100000; i++) {
+    for (int i = 0; i < VIA_SPIN; i++) {
         uint32_t v = inl(io_bm + VIA_REG_AC97);
         if (!(v & VIA_AC97_BUSY) && (v & VIA_AC97_PVALID))
             return (uint16_t)v;
@@ -147,22 +169,35 @@ void ac97_init(void) {
             delay_ms(1);
     } else {                                       /* VIA VT82C686 */
         io_bm = (uint16_t)(pci_cfg_read32(bus, dev, fn, 0x10) & 0xFFFC);     /* BAR0 */
-        /* bring the AC-link up: enable, PCM, SYNC, deassert reset */
-        uint32_t r = pci_cfg_read32(bus, dev, fn, VIA_ACLINK_CTRL & 0xFC);
-        int sh = (VIA_ACLINK_CTRL & 3) * 8;
-        r = (r & ~(0xFFu << sh)) | ((uint32_t)VIA_ACLINK_INIT << sh);
-        pci_cfg_write32(bus, dev, fn, VIA_ACLINK_CTRL & 0xFC, r);
-        delay_ms(10);
+        /* Bring the AC-link up only if the codec isn't already ready: force
+         * SYNC with reset released, then the normal init, then wait (<=250 ms)
+         * for the primary codec. Bounded so it can never hang the boot. */
+        if (!(cfg_read8(VIA_ACLINK_STAT) & VIA_ACLINK_C00_RDY)) {
+            cfg_write8(VIA_ACLINK_CTRL,
+                       VIA_ACLINK_ENABLE | VIA_ACLINK_RESET | VIA_ACLINK_SYNC);
+            delay_ms(1);
+            cfg_write8(VIA_ACLINK_CTRL, VIA_ACLINK_INIT);
+            delay_ms(1);
+            for (int i = 0; i < 250; i++) {
+                if (cfg_read8(VIA_ACLINK_STAT) & VIA_ACLINK_C00_RDY) break;
+                delay_ms(1);
+            }
+        }
     }
 
-    /* wait for the codec to answer, then configure it (standard AC'97) */
-    for (int i = 0; i < 1000; i++) {
-        if (codec_read(CODEC_VENDOR1) != 0xFFFF) break;
+    /* Confirm the codec actually answers (bounded); give up cleanly if not, so
+     * boot continues and 'ac97' can be used to diagnose. */
+    int ready = 0;
+    for (int i = 0; i < 200; i++) {
+        if (codec_read(CODEC_VENDOR1) != 0xFFFF) { ready = 1; break; }
         delay_ms(1);
     }
+    if (!ready)
+        return;                                     /* present stays 0 */
+
     codec_write(CODEC_RESET, 0);
     delay_ms(2);
-    codec_write(CODEC_MASTER_VOL, 0x0000);         /* 0 dB, unmuted */
+    codec_write(CODEC_MASTER_VOL, 0x0000);          /* 0 dB, unmuted */
     codec_write(CODEC_PCM_VOL,    0x0808);          /* PCM out, unmuted */
 
     if (codec_read(CODEC_EXT_AUDIO) & 1) {          /* variable-rate audio */
@@ -174,6 +209,41 @@ void ac97_init(void) {
 }
 
 int ac97_present(void) { return present; }
+
+void ac97_debug(void) {
+    if (variant == AC_NONE) {
+        console_write("  no AC'97 controller found on PCI\n");
+        return;
+    }
+    console_write("  controller : ");
+    console_write(variant == AC_ICH ? "Intel ICH" : "VIA VT82C686");
+    console_write(present ? "  (codec ready)\n" : "  (codec NOT ready)\n");
+
+    console_write("  io base    : "); console_write_hex(io_bm);
+    if (variant == AC_ICH) { console_write("  mixer "); console_write_hex(io_mixer); }
+    console_putc('\n');
+
+    if (variant == AC_VIA) {
+        console_write("  ACLINK STAT: "); console_write_hex(cfg_read8(VIA_ACLINK_STAT));
+        console_write("  (bit0 = primary codec ready)\n");
+        console_write("  ACLINK CTRL: "); console_write_hex(cfg_read8(VIA_ACLINK_CTRL));
+        console_write("  (want E/N of 0xC4)\n");
+        console_write("  AC97 window: "); console_write_hex(inl(io_bm + VIA_REG_AC97));
+        console_putc('\n');
+    } else {
+        console_write("  GLOB_STA   : "); console_write_hex(inl(io_bm + ICH_GLOB_STA));
+        console_write("  (bit8 = primary codec ready)\n");
+    }
+
+    console_write("  codec vendr: ");
+    console_write_hex(codec_read(0x7C)); console_putc(' ');
+    console_write_hex(codec_read(0x7E));
+    console_write("  (0xFFFF = codec not answering)\n");
+    console_write("  master(02) : "); console_write_hex(codec_read(CODEC_MASTER_VOL));
+    console_write("  extaud(28) : "); console_write_hex(codec_read(CODEC_EXT_AUDIO));
+    console_write("  rate(2C)   : "); console_write_hex(codec_read(CODEC_PCM_RATE));
+    console_putc('\n');
+}
 
 /* ---- playback ------------------------------------------------------------- */
 static void ich_start(uint32_t buf_phys, int bytes) {
