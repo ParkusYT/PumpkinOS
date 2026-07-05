@@ -23,6 +23,7 @@
 #define REG_CAPR     0x38    /* current address of packet read              */
 #define REG_IMR      0x3C
 #define REG_ISR      0x3E
+#define REG_TCR      0x40
 #define REG_RCR      0x44
 #define REG_CONFIG1  0x52
 
@@ -76,13 +77,26 @@ void rtl8139_init(void) {
     outb(io_base + REG_CONFIG1, 0x00);          /* power on */
 
     outb(io_base + REG_CMD, CMD_RST);           /* software reset */
-    for (int i = 0; i < 100000 && (inb(io_base + REG_CMD) & CMD_RST); i++)
+    for (int i = 0; i < 1000000 && (inb(io_base + REG_CMD) & CMD_RST); i++)
         io_wait();
 
     outl(io_base + REG_RBSTART, phys_of(rx_buffer));
+
+    /* Read pointer = -16: this tells the card the ring is empty and it should
+     * begin writing at offset 0. Real hardware needs it explicitly; QEMU is
+     * lenient. */
+    outw(io_base + REG_CAPR, 0xFFF0);
+    outw(io_base + REG_ISR, 0xFFFF);            /* clear any latched status */
     outw(io_base + REG_IMR, 0x0000);            /* polled: no interrupts */
-    /* accept broadcast + multicast + physical-match + all, with wrap. */
-    outl(io_base + REG_RCR, 0x0F | (1u << 7));
+
+    /* RCR: accept broadcast + multicast + physical-match + all promiscuous,
+     * with ring wrap, unlimited RX DMA burst, and "whole packet" RX FIFO
+     * threshold so a frame is only surfaced once fully received. */
+    outl(io_base + REG_RCR, 0x0F | (1u << 7) | (7u << 8) | (7u << 13));
+    /* TCR: 2048-byte max TX DMA burst, normal interframe gap (avoids the FIFO
+     * underruns a zero-config TCR can cause on real silicon). */
+    outl(io_base + REG_TCR, 0x03000700u);
+
     outb(io_base + REG_CMD, CMD_RE | CMD_TE);   /* enable receiver + transmitter */
 
     for (int i = 0; i < 6; i++)
@@ -108,6 +122,14 @@ int rtl8139_send(const void *frame, int len) {
 
     outl(io_base + REG_TSAD0 + n * 4, phys_of(tx_buffer[n]));
     outl(io_base + REG_TSD0 + n * 4, (uint32_t)padded);   /* OWN=0 starts the TX */
+
+    /* Wait (briefly) for transmit-OK so the frame is really on the wire before
+     * we go looking for a reply, and the descriptor is free to reuse. */
+    for (int i = 0; i < 100000; i++) {
+        if (inl(io_base + REG_TSD0 + n * 4) & 0x8000)   /* TOK */
+            break;
+        io_wait();
+    }
 
     tx_cur = (n + 1) & 3;
     return 0;
