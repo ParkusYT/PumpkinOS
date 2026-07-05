@@ -115,14 +115,24 @@ static uint16_t codec_read(uint8_t reg) {
     if (variant == AC_ICH)
         return inw(io_mixer + reg);
     outl(io_bm + VIA_REG_AC97, VIA_AC97_READ | ((uint32_t)reg << 16));
+    /* The window pipelines: right after issuing, it still shows the PREVIOUS
+     * register's result. Wait until it reports OUR register (bits 16-22 echo
+     * the command) with the valid bit set and busy clear. Fall back to the
+     * last valid readback if the echo never matches, so detection can't
+     * regress to "not answering". */
+    uint32_t last = 0xFFFF;
     for (int i = 0; i < VIA_SPIN; i++) {
         uint32_t v = inl(io_bm + VIA_REG_AC97);
-        if (!(v & VIA_AC97_BUSY) && (v & VIA_AC97_PVALID))
-            return (uint16_t)v;
+        if (!(v & VIA_AC97_BUSY) && (v & VIA_AC97_PVALID)) {
+            last = v;
+            if (((v >> 16) & 0x7F) == reg)
+                return (uint16_t)v;
+        }
         io_wait();
     }
-    return 0xFFFF;
+    return (uint16_t)last;
 }
+
 
 /* ---- PCI discovery -------------------------------------------------------- */
 static int find_controller(void) {
@@ -169,9 +179,8 @@ void ac97_init(void) {
             delay_ms(1);
     } else {                                       /* VIA VT82C686 */
         io_bm = (uint16_t)(pci_cfg_read32(bus, dev, fn, 0x10) & 0xFFFC);     /* BAR0 */
-        /* Bring the AC-link up only if the codec isn't already ready: force
-         * SYNC with reset released, then the normal init, then wait (<=250 ms)
-         * for the primary codec. Bounded so it can never hang the boot. */
+        /* Only do the disruptive AC-link reset if the codec isn't already up
+         * (bounded so it can never hang the boot). */
         if (!(cfg_read8(VIA_ACLINK_STAT) & VIA_ACLINK_C00_RDY)) {
             cfg_write8(VIA_ACLINK_CTRL,
                        VIA_ACLINK_ENABLE | VIA_ACLINK_RESET | VIA_ACLINK_SYNC);
@@ -182,6 +191,11 @@ void ac97_init(void) {
                 if (cfg_read8(VIA_ACLINK_STAT) & VIA_ACLINK_C00_RDY) break;
                 delay_ms(1);
             }
+        } else {
+            /* Codec already up (BIOS did it) - just make sure the SGD DMA link
+             * bit is enabled, without toggling the link/codec. */
+            cfg_write8(VIA_ACLINK_CTRL,
+                       cfg_read8(VIA_ACLINK_CTRL) | VIA_ACLINK_SGD);
         }
     }
 
