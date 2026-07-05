@@ -25,6 +25,7 @@
 #include "tcp.h"
 #include "string.h"
 #include "io.h"
+#include "pci.h"
 
 #define LINE_MAX    128
 
@@ -49,7 +50,7 @@ static void cmd_help(void) {
     console_write("  General : help  clear  echo <text>  banner  about\n");
     console_write("  Files   : ls  cd <d>  pwd  cat <f>  write <f> <t>  touch <f>\n");
     console_write("            mkdir <d>  rm [-r] <f>  rmdir <d>\n");
-    console_write("  System  : disks [read N]  meminfo  date  uptime  sleep <s>\n");
+    console_write("  System  : disks [read N]  meminfo  pci  date  uptime  sleep <s>\n");
     console_write("  Network : net  dhcp  dns <host>  ping <host>  http <host>\n");
     console_write("  Programs: run <file.elf>  desktop\n");
     console_write("  Power   : reboot  poweroff  halt\n");
@@ -283,6 +284,57 @@ static void cmd_write(char *args) {
         buf[n++] = *p;
     buf[n++] = '\n';                      /* end the file with a newline */
     fs_create(args, buf, n);
+}
+
+/* ---- PCI bus listing (to identify hardware, e.g. the audio chip) ---------- */
+static void print_hexn(uint32_t v, int digits) {
+    const char *h = "0123456789abcdef";
+    for (int i = (digits - 1) * 4; i >= 0; i -= 4)
+        console_putc(h[(v >> i) & 0xF]);
+}
+
+static const char *pci_class_name(uint8_t cls, uint8_t sub) {
+    switch (cls) {
+        case 0x01: return "Storage";
+        case 0x02: return "Network";
+        case 0x03: return "Display";
+        case 0x04: return (sub == 0x01) ? "Audio (AC97)"
+                        : (sub == 0x03) ? "Audio (HDA)" : "Multimedia";
+        case 0x06: return "Bridge";
+        case 0x0C: return (sub == 0x03) ? "USB" : "Serial bus";
+        default:   return "";
+    }
+}
+
+static void cmd_pci(void) {
+    console_write("  bus:dev.fn  vend:dev   class  device\n");
+    for (uint8_t dev = 0; dev < 32; dev++) {
+        uint32_t id0 = pci_cfg_read32(0, dev, 0, 0x00);
+        if ((id0 & 0xFFFF) == 0xFFFF)
+            continue;
+        uint8_t htype = (uint8_t)pci_cfg_read16(0, dev, 0, 0x0E);
+        int nfn = (htype & 0x80) ? 8 : 1;           /* multi-function device? */
+        for (int fn = 0; fn < nfn; fn++) {
+            uint32_t id = pci_cfg_read32(0, dev, (uint8_t)fn, 0x00);
+            if ((id & 0xFFFF) == 0xFFFF)
+                continue;
+            uint32_t cc = pci_cfg_read32(0, dev, (uint8_t)fn, 0x08);
+            uint8_t cls = (uint8_t)(cc >> 24), sub = (uint8_t)(cc >> 16);
+            int audio = (cls == 0x04);
+
+            console_write("  00:");
+            print_hexn(dev, 2); console_putc('.'); print_hexn((uint32_t)fn, 1);
+            console_write("   ");
+            print_hexn(id & 0xFFFF, 4); console_putc(':'); print_hexn(id >> 16, 4);
+            console_write("  ");
+            print_hexn(cls, 2); console_putc(':'); print_hexn(sub, 2);
+            console_write("  ");
+            if (audio) console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+            console_write(pci_class_name(cls, sub));
+            if (audio) console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+            console_putc('\n');
+        }
+    }
 }
 
 /* ---- networking ----------------------------------------------------------- */
@@ -593,6 +645,8 @@ static void shell_execute(char *line) {
         cmd_dhcp();
     else if (strcmp(cmd, "dns") == 0 || strcmp(cmd, "nslookup") == 0)
         cmd_dns(args);
+    else if (strcmp(cmd, "pci") == 0 || strcmp(cmd, "lspci") == 0)
+        cmd_pci();
     else if (strcmp(cmd, "ping") == 0)
         cmd_ping(args);
     else if (strcmp(cmd, "http") == 0)
