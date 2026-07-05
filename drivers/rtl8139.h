@@ -27,4 +27,10 @@ int rtl8139_send(const void *frame, int len);
  * returns the frame length, or 0 if nothing is waiting. */
 int rtl8139_poll(void *buf, int maxlen);
 
+/* Diagnostics: frames transmitted / received so far, and the raw Media Status
+ * Register (bit 2 clear = link up, bit 3 set = 10 Mbps). */
+uint32_t rtl8139_tx_count(void);
+uint32_t rtl8139_rx_count(void);
+uint8_t  rtl8139_msr(void);
+
 #endif /* PUMPKIN_RTL8139_H */

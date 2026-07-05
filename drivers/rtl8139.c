@@ -42,6 +42,7 @@ static uint8_t  mac[6];
 static int      present;
 static int      tx_cur;
 static int      rx_offset;
+static uint32_t tx_count, rx_count;
 
 static uint32_t phys_of(const void *p) {
     return (uint32_t)(uintptr_t)p;      /* identity-mapped low memory */
@@ -131,6 +132,7 @@ int rtl8139_send(const void *frame, int len) {
         io_wait();
     }
 
+    tx_count++;
     tx_cur = (n + 1) & 3;
     return 0;
 }
@@ -142,6 +144,7 @@ int rtl8139_poll(void *out, int maxlen) {
     uint8_t *p = rx_buffer + rx_offset;
     uint16_t status = (uint16_t)(p[0] | (p[1] << 8));
     uint16_t length = (uint16_t)(p[2] | (p[3] << 8));   /* frame length + 4 (CRC) */
+    rx_count++;
 
     int pktlen = 0;
     if ((status & 0x01) && length >= 4) {       /* ROK, sane length */
@@ -159,3 +162,7 @@ int rtl8139_poll(void *out, int maxlen) {
 
     return pktlen;
 }
+
+uint32_t rtl8139_tx_count(void) { return tx_count; }
+uint32_t rtl8139_rx_count(void) { return rx_count; }
+uint8_t  rtl8139_msr(void)      { return present ? inb(io_base + 0x58) : 0xFF; }

@@ -306,8 +306,18 @@ static void cmd_net(void) {
         return;
     }
     console_write("  MAC     : "); print_mac(); console_putc('\n');
+
+    uint8_t msr = rtl8139_msr();
+    console_write("  link    : ");
+    console_write((msr & 0x04) ? "DOWN" : "up");
+    console_write((msr & 0x08) ? "  10Mbps" : "  100Mbps");
+    console_write("   (MSR="); console_write_hex(msr); console_write(")\n");
+    console_write("  TX / RX : ");
+    console_write_dec(rtl8139_tx_count()); console_write(" / ");
+    console_write_dec(rtl8139_rx_count()); console_write(" frames\n");
+
     console_write("  status  : ");
-    if (!net_up) { console_write("down  (run 'dhcp')\n"); return; }
+    if (!net_up) { console_write("no IP  (run 'dhcp')\n"); return; }
     console_write("up\n");
     console_write("  IP      : "); print_ip(net_ip);      console_putc('\n');
     console_write("  netmask : "); print_ip(net_mask);    console_putc('\n');
