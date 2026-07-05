@@ -18,9 +18,14 @@
 /* Fixed high-memory DMA buffer: 48 kHz 16-bit stereo of a few seconds is far
  * too big for the low-memory window below the floppy DMA buffer, so we place
  * it at a fixed physical address and reserve it from the frame allocator. It's
- * in identity-mapped RAM, so its physical address equals its virtual address. */
+ * in identity-mapped RAM, so its physical address equals its virtual address.
+ * It holds two preloaded clips (startup + shutdown) side by side. */
 #define AC97_DMA_PHYS  0x00300000u
-#define AC97_DMA_BYTES (768u * 1024u)
+#define AC97_DMA_BYTES (1024u * 1024u)
+
+/* Preload slots. */
+#define AC97_STARTUP   0
+#define AC97_SHUTDOWN  1
 
 /* Find the audio controller, enable it and bring up the codec. */
 void ac97_init(void);
@@ -32,17 +37,14 @@ int  ac97_present(void);
  * for diagnosing why sound isn't playing on real hardware. */
 void ac97_debug(void);
 
-/* Play a raw 8-bit unsigned mono PCM file (at AC97_RATE) off the disk. When
- * 'wait' is non-zero, block until playback finishes; otherwise start the DMA
- * and return immediately (the sound plays in the background). Returns 0 on
- * success, -1 on error. */
-int  ac97_play_file(const char *path, int wait);
+/* Read + decode a raw 8-bit unsigned mono PCM file into the given slot's DMA
+ * region (AC97_STARTUP / AC97_SHUTDOWN). This is the slow part (floppy I/O),
+ * meant to run once at boot so playback later is instant. Returns 0 on success.
+ */
+int  ac97_preload(int slot, const char *path);
 
-/* Split version of the above so the slow floppy read can be done ahead of time
- * (e.g. preload at boot) and playback started instantly later:
- *   ac97_prepare()       - read + decode the file into the DMA buffer.
- *   ac97_start_prepared() - kick off DMA on whatever was last prepared. */
-int  ac97_prepare(const char *path);
-void ac97_start_prepared(void);
+/* Start DMA on a preloaded slot. When 'wait' is non-zero, block until playback
+ * finishes; otherwise return immediately (the sound plays in the background). */
+void ac97_play(int slot, int wait);
 
 #endif /* PUMPKIN_AC97_H */

@@ -65,12 +65,19 @@ static uint16_t io_mixer;         /* ICH NAMBAR                                *
 static uint16_t io_bm;            /* ICH NABMBAR / VIA single base             */
 static int      present;
 
-/* DMA buffer at the reserved fixed high-memory address (see ac97.h). The 8-bit
- * mono file is read into the top quarter and expanded (x4) forward into 16-bit
- * signed stereo from the start - the write pointer never catches the read
- * pointer while the source stays within the top quarter. */
-#define AUDIO_BUF ((int)AC97_DMA_BYTES)
-static uint8_t *const audio_dma = (uint8_t *)AC97_DMA_PHYS;
+/* Two preloaded clips share the reserved high-memory region (see ac97.h):
+ * slot 0 (startup) and slot 1 (shutdown), each its own sub-buffer. Within a
+ * slot the 8-bit mono file is read into the top quarter and expanded (x4)
+ * forward into 16-bit signed stereo from the start - the write pointer never
+ * catches the read pointer while the source stays within the top quarter. */
+#define SLOT0_CAP (640 * 1024)      /* startup:  ~615 KB expanded */
+#define SLOT1_CAP (384 * 1024)      /* shutdown: ~352 KB expanded */
+static uint8_t *const slot_buf[2] = {
+    (uint8_t *)AC97_DMA_PHYS,
+    (uint8_t *)(AC97_DMA_PHYS + SLOT0_CAP),
+};
+static const int slot_cap[2] = { SLOT0_CAP, SLOT1_CAP };
+static int       slot_bytes[2];     /* prepared 16-bit-stereo bytes, 0 = none */
 
 /* descriptor tables (kept in identity-mapped low memory, so addr == phys) */
 static uint32_t ich_bdl[32 * 2] __attribute__((aligned(8)));   /* 32 * {addr,len} */
@@ -304,44 +311,47 @@ static int via_done(void) {
 }
 static void via_stop(void) { outb(io_bm + VIA_SGD_CONTROL, 0x40); }
 
-static int prep_bytes;   /* 16-bit-stereo bytes staged in audio_dma, 0 = none */
-
-int ac97_prepare(const char *path) {
-    prep_bytes = 0;
+int ac97_preload(int slot, const char *path) {
+    if (slot < 0 || slot > 1) return -1;
+    slot_bytes[slot] = 0;
     if (!present)
         return -1;
 
-    /* Read the 8-bit mono file into the top quarter, then expand it forward to
-     * 16-bit signed stereo from the start (the reading floppy I/O is the slow
-     * part - doing it here, e.g. at boot, keeps it off the playback path). */
-    int maxsrc = AUDIO_BUF / 4;
-    uint8_t *src = audio_dma + (AUDIO_BUF - maxsrc);
+    /* Read the 8-bit mono file into the slot's top quarter, then expand it
+     * forward to 16-bit signed stereo from the start (the floppy I/O is the
+     * slow part - doing it here, at boot, keeps it off the playback path). */
+    uint8_t *buf = slot_buf[slot];
+    int cap = slot_cap[slot];
+    int maxsrc = cap / 4;
+    uint8_t *src = buf + (cap - maxsrc);
     int n = fs_read_path(path, src, (uint32_t)maxsrc);
     if (n <= 0)
         return -1;
 
-    int16_t *dst = (int16_t *)audio_dma;
+    int16_t *dst = (int16_t *)buf;
     for (int i = 0; i < n; i++) {
         int16_t s = (int16_t)(((int)src[i] - 128) << 8);
         dst[2 * i] = s;
         dst[2 * i + 1] = s;
     }
-    prep_bytes = n * 4;
+    slot_bytes[slot] = n * 4;
     return 0;
 }
 
-void ac97_start_prepared(void) {
-    if (!present || prep_bytes <= 0)
+void ac97_play(int slot, int wait) {
+    if (slot < 0 || slot > 1 || !present || slot_bytes[slot] <= 0)
         return;
-    if (variant == AC_ICH) ich_start(phys_of(audio_dma), prep_bytes);
-    else                   via_start(phys_of(audio_dma), prep_bytes);
-}
 
-/* Block until playback finishes, bounded to the clip's real duration + a small
- * margin - so if the controller's "done" bit never trips on real hardware, we
- * still stop about when the audio actually ends rather than freezing longer. */
-static void ac97_wait_done(void) {
-    int frames = prep_bytes / 4;
+    if (variant == AC_ICH) ich_start(phys_of(slot_buf[slot]), slot_bytes[slot]);
+    else                   via_start(phys_of(slot_buf[slot]), slot_bytes[slot]);
+
+    if (!wait)
+        return;
+
+    /* Block until playback finishes, bounded to the clip's real duration + a
+     * small margin - so if the controller's "done" bit never trips on real
+     * hardware, we still stop about when the audio actually ends. */
+    int frames = slot_bytes[slot] / 4;
     uint32_t hz = timer_hz(); if (!hz) hz = 100;
     uint32_t ms = (uint32_t)frames * 1000u / AC97_RATE + 400;
     uint32_t limit = ms * hz / 1000; if (!limit) limit = 1;
@@ -351,13 +361,4 @@ static void ac97_wait_done(void) {
         io_wait();
     }
     if (variant == AC_ICH) ich_stop(); else via_stop();
-}
-
-int ac97_play_file(const char *path, int wait) {
-    if (ac97_prepare(path) != 0)
-        return -1;
-    ac97_start_prepared();
-    if (wait)
-        ac97_wait_done();
-    return 0;
 }

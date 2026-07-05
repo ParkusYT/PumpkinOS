@@ -493,7 +493,7 @@ static void do_poweroff(void) {
     gfx_text(bx + (bw - gfx_text_width(msg)) / 2, by + TITLE_H + 12, msg, COL_TEXT, -1);
     gfx_present();
 
-    ac97_play_file("/system/SHUTDOWN.PCM", 1);
+    ac97_play(AC97_SHUTDOWN, 1);            /* preloaded at boot - plays instantly */
     leave_graphics();
     acpi_poweroff();                        /* returns only if it failed */
     for (;;) __asm__ volatile("cli; hlt");
@@ -539,9 +539,9 @@ void desktop_run(void) {
     cx = mx; cy = my;
 
     /* startup jingle plays in the background as the desktop comes up - it was
-     * decoded into the DMA buffer at boot, so this just kicks off the DMA (no
+     * decoded into its DMA slot at boot, so this just kicks off the DMA (no
      * floppy read here, so the desktop isn't frozen while it plays) */
-    ac97_start_prepared();
+    ac97_play(AC97_STARTUP, 0);
 
     for (;;) {
         if (keyboard_haschar()) {

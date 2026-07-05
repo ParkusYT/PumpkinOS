@@ -175,9 +175,10 @@ void kernel_main(void) {
     if (ac97_present()) {
         console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
         console_write("ok\n");
-        /* Decode the startup jingle into the DMA buffer now (the slow floppy
-         * read), so entering the desktop can start it instantly. */
-        ac97_prepare("/system/STARTUP.PCM");
+        /* Decode both jingles into their DMA slots now (the slow floppy
+         * reads), so the desktop can start them instantly later. */
+        ac97_preload(AC97_STARTUP,  "/system/STARTUP.PCM");
+        ac97_preload(AC97_SHUTDOWN, "/system/SHUTDOWN.PCM");
     } else {
         console_set_color(VGA_YELLOW, VGA_BLACK);
         console_write("none\n");
