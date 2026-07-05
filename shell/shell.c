@@ -26,7 +26,6 @@
 #include "string.h"
 #include "io.h"
 #include "pci.h"
-#include "ac97.h"
 
 #define LINE_MAX    128
 
@@ -547,7 +546,6 @@ static void cmd_poweroff(void) {
     console_set_color(VGA_LIGHT_CYAN, VGA_BLACK);
     console_write("Powering off via ACPI...\n");
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
-    ac97_play_file("/system/SHUTDOWN.PCM", 1);   /* play the jingle, then cut power */
     acpi_poweroff();                    /* returns only if it failed */
     console_set_color(VGA_YELLOW, VGA_BLACK);
     console_write("ACPI power-off unavailable; halting instead.\n");

@@ -480,8 +480,8 @@ static void do_reboot(void) {
     for (;;) __asm__ volatile("cli; hlt");
 }
 static void do_poweroff(void) {
+    ac97_play_file("/system/SHUTDOWN.PCM", 1);   /* jingle while the desktop's still up */
     leave_graphics();
-    ac97_play_file("/system/SHUTDOWN.PCM", 1);   /* jingle, then cut power */
     acpi_poweroff();                        /* returns only if it failed */
     for (;;) __asm__ volatile("cli; hlt");
 }
@@ -524,6 +524,9 @@ void desktop_run(void) {
     gfx_present();
     draw_cursor_fb(mx, my);
     cx = mx; cy = my;
+
+    /* startup jingle plays in the background as the desktop comes up */
+    ac97_play_file("/system/STARTUP.PCM", 0);
 
     for (;;) {
         if (keyboard_haschar()) {

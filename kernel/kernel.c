@@ -184,9 +184,6 @@ void kernel_main(void) {
     console_write("\n  Type 'help' to get started.\n\n");
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
 
-    /* play the startup jingle in the background (DMA plays while we go on) */
-    ac97_play_file("/system/STARTUP.PCM", 0);
-
     shell_run();   /* never returns */
 
     /* Just in case the shell ever does return, halt cleanly. */
