@@ -333,6 +333,25 @@ static void cmd_net(void) {
     console_write("  DNS     : "); print_ip(net_dns);     console_putc('\n');
 }
 
+/* Raw RTL8139 register dump for diagnosing a dead RX on real hardware. */
+static void cmd_netdbg(void) {
+    if (!rtl8139_present()) {
+        console_write("no network card detected\n");
+        return;
+    }
+    console_write("  CMD   = "); console_write_hex(rtl8139_reg8(0x37));
+    console_write("  (bit3 RxEnable, bit2 TxEnable, bit0 BufEmpty)\n");
+    console_write("  RCR   = "); console_write_hex(rtl8139_reg32(0x44)); console_putc('\n');
+    console_write("  TCR   = "); console_write_hex(rtl8139_reg32(0x40)); console_putc('\n');
+    console_write("  RBSTRT= "); console_write_hex(rtl8139_reg32(0x30)); console_putc('\n');
+    console_write("  CAPR  = "); console_write_hex(rtl8139_reg16(0x38)); console_putc('\n');
+    console_write("  CBR   = "); console_write_hex(rtl8139_reg16(0x3A));
+    console_write("  (RX write pointer; 0 = card wrote nothing)\n");
+    console_write("  ISR   = "); console_write_hex(rtl8139_reg16(0x3E)); console_putc('\n');
+    console_write("  IMR   = "); console_write_hex(rtl8139_reg16(0x3C)); console_putc('\n');
+    console_write("  MSR   = "); console_write_hex(rtl8139_reg8(0x58)); console_putc('\n');
+}
+
 static void cmd_dhcp(void) {
     if (!rtl8139_present()) {
         console_write("no network card detected\n");
@@ -490,6 +509,8 @@ static void shell_execute(char *line) {
         cmd_dhcp();
     else if (strcmp(cmd, "dns") == 0 || strcmp(cmd, "nslookup") == 0)
         cmd_dns(args);
+    else if (strcmp(cmd, "netdbg") == 0)
+        cmd_netdbg();
     else if (strcmp(cmd, "run") == 0 || strcmp(cmd, "exec") == 0)
         cmd_run(args);
     else if (strcmp(cmd, "desktop") == 0 || strcmp(cmd, "gui") == 0)

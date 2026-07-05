@@ -91,10 +91,15 @@ void rtl8139_init(void) {
     outw(io_base + REG_ISR, 0xFFFF);            /* clear any latched status */
     outw(io_base + REG_IMR, 0x0000);            /* polled: no interrupts */
 
-    /* RCR: accept only physical-match (our MAC) + broadcast - NOT promiscuous,
-     * so background traffic can't flood and overflow the ring. Ring wrap,
-     * unlimited RX DMA burst, "whole packet" RX FIFO threshold. */
-    outl(io_base + REG_RCR, 0x0A | (1u << 7) | (7u << 8) | (7u << 13));
+    /* Accept-all multicast hash, so broadcast/multicast can't be filtered out
+     * by a quirky multicast unit on real silicon. */
+    for (int i = 0; i < 8; i++)
+        outb(io_base + 0x08 + i, 0xFF);
+
+    /* RCR: accept physical-match (our MAC) + multicast + broadcast (not fully
+     * promiscuous). Ring wrap, unlimited RX DMA burst, "whole packet" RX FIFO
+     * threshold. */
+    outl(io_base + REG_RCR, 0x0E | (1u << 7) | (7u << 8) | (7u << 13));
     /* TCR: 2048-byte max TX DMA burst, normal interframe gap (avoids the FIFO
      * underruns a zero-config TCR can cause on real silicon). */
     outl(io_base + REG_TCR, 0x03000700u);
@@ -197,3 +202,8 @@ uint32_t rtl8139_rx_count(void)  { return rx_count; }
 uint32_t rtl8139_tx_err(void)    { return tx_err; }
 uint16_t rtl8139_isr_seen(void)  { return isr_seen; }
 uint8_t  rtl8139_msr(void)       { return present ? inb(io_base + 0x58) : 0xFF; }
+
+/* Raw register reads (for the 'netdbg' diagnostic). */
+uint8_t  rtl8139_reg8(uint8_t off)  { return present ? inb(io_base + off) : 0; }
+uint16_t rtl8139_reg16(uint8_t off) { return present ? inw(io_base + off) : 0; }
+uint32_t rtl8139_reg32(uint8_t off) { return present ? inl(io_base + off) : 0; }

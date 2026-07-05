@@ -39,4 +39,9 @@ uint32_t rtl8139_tx_err(void);      /* transmits that did not report TOK */
 uint16_t rtl8139_isr_seen(void);
 uint8_t  rtl8139_msr(void);
 
+/* Raw register reads at an offset from the I/O base (for diagnostics). */
+uint8_t  rtl8139_reg8(uint8_t off);
+uint16_t rtl8139_reg16(uint8_t off);
+uint32_t rtl8139_reg32(uint8_t off);
+
 #endif /* PUMPKIN_RTL8139_H */
