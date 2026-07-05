@@ -27,11 +27,16 @@ int rtl8139_send(const void *frame, int len);
  * returns the frame length, or 0 if nothing is waiting. */
 int rtl8139_poll(void *buf, int maxlen);
 
-/* Diagnostics: frames transmitted / received so far, and the raw Media Status
- * Register (bit 2 clear = link up, bit 3 set = 10 Mbps). */
+/* Restart the receive ring (clears an overflow/stall). */
+void rtl8139_reset_rx(void);
+
+/* Diagnostics: frames transmitted / received so far, the OR of all Interrupt
+ * Status Register values seen (bit0=RxOK, bit2=TxOK, bit4=RxOverflow), and the
+ * raw Media Status Register (bit 2 clear = link up, bit 3 set = 10 Mbps). */
 uint32_t rtl8139_tx_count(void);
 uint32_t rtl8139_rx_count(void);
 uint32_t rtl8139_tx_err(void);      /* transmits that did not report TOK */
+uint16_t rtl8139_isr_seen(void);
 uint8_t  rtl8139_msr(void);
 
 #endif /* PUMPKIN_RTL8139_H */

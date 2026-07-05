@@ -321,6 +321,8 @@ static void cmd_net(void) {
         console_write(" TX errors)");
     }
     console_putc('\n');
+    console_write("  ISR seen: "); console_write_hex(rtl8139_isr_seen());
+    console_write("  (bit0 RxOK, bit2 TxOK, bit4 RxOverflow)\n");
 
     console_write("  status  : ");
     if (!net_up) { console_write("no IP  (run 'dhcp')\n"); return; }

@@ -43,6 +43,7 @@ static int      present;
 static int      tx_cur;
 static int      rx_offset;
 static uint32_t tx_count, rx_count, tx_err;
+static uint16_t isr_seen;              /* OR of every ISR value we've polled */
 
 static uint32_t phys_of(const void *p) {
     return (uint32_t)(uintptr_t)p;      /* identity-mapped low memory */
@@ -90,10 +91,10 @@ void rtl8139_init(void) {
     outw(io_base + REG_ISR, 0xFFFF);            /* clear any latched status */
     outw(io_base + REG_IMR, 0x0000);            /* polled: no interrupts */
 
-    /* RCR: accept broadcast + multicast + physical-match + all promiscuous,
-     * with ring wrap, unlimited RX DMA burst, and "whole packet" RX FIFO
-     * threshold so a frame is only surfaced once fully received. */
-    outl(io_base + REG_RCR, 0x0F | (1u << 7) | (7u << 8) | (7u << 13));
+    /* RCR: accept only physical-match (our MAC) + broadcast - NOT promiscuous,
+     * so background traffic can't flood and overflow the ring. Ring wrap,
+     * unlimited RX DMA burst, "whole packet" RX FIFO threshold. */
+    outl(io_base + REG_RCR, 0x0A | (1u << 7) | (7u << 8) | (7u << 13));
     /* TCR: 2048-byte max TX DMA burst, normal interframe gap (avoids the FIFO
      * underruns a zero-config TCR can cause on real silicon). */
     outl(io_base + REG_TCR, 0x03000700u);
@@ -144,8 +145,29 @@ int rtl8139_send(const void *frame, int len) {
     return 0;
 }
 
+/* Restart the receiver's ring (recovers from an RX overflow / stall). */
+void rtl8139_reset_rx(void) {
+    if (!present)
+        return;
+    outb(io_base + REG_CMD, CMD_TE);            /* receiver off */
+    rx_offset = 0;
+    outl(io_base + REG_RBSTART, phys_of(rx_buffer));
+    outw(io_base + REG_CAPR, 0xFFF0);
+    outw(io_base + REG_ISR, 0xFFFF);            /* clear overflow + all status */
+    outb(io_base + REG_CMD, CMD_RE | CMD_TE);   /* receiver on */
+}
+
 int rtl8139_poll(void *out, int maxlen) {
-    if (!present || (inb(io_base + REG_CMD) & CMD_BUFE))
+    if (!present)
+        return 0;
+
+    uint16_t isr = inw(io_base + REG_ISR);
+    isr_seen |= isr;
+    if (isr & 0x0050) {                         /* RXOVW or FOVW -> recover */
+        rtl8139_reset_rx();
+        return 0;
+    }
+    if (inb(io_base + REG_CMD) & CMD_BUFE)
         return 0;                               /* ring empty */
 
     uint8_t *p = rx_buffer + rx_offset;
@@ -170,7 +192,8 @@ int rtl8139_poll(void *out, int maxlen) {
     return pktlen;
 }
 
-uint32_t rtl8139_tx_count(void) { return tx_count; }
-uint32_t rtl8139_rx_count(void) { return rx_count; }
-uint32_t rtl8139_tx_err(void)   { return tx_err; }
-uint8_t  rtl8139_msr(void)      { return present ? inb(io_base + 0x58) : 0xFF; }
+uint32_t rtl8139_tx_count(void)  { return tx_count; }
+uint32_t rtl8139_rx_count(void)  { return rx_count; }
+uint32_t rtl8139_tx_err(void)    { return tx_err; }
+uint16_t rtl8139_isr_seen(void)  { return isr_seen; }
+uint8_t  rtl8139_msr(void)       { return present ? inb(io_base + 0x58) : 0xFF; }

@@ -69,6 +69,10 @@ int dhcp_configure(void) {
     if (!rtl8139_present())
         return 0;
 
+    /* Flush any traffic that piled up (and possibly overflowed the ring) since
+     * boot, so we start the exchange with a clean, live receiver. */
+    rtl8139_reset_rx();
+
     /* Reset any prior config so ARP/routing behave during the exchange. */
     net_ip = net_gateway = net_dns = net_mask = 0;
     net_up = 0;
