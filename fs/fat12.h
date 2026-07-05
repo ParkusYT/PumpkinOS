@@ -19,6 +19,17 @@ const char *fs_cwd(void);
  * matches (out is the single name when 1, the common prefix when more). */
 int fs_complete(const char *prefix, char *out, uint32_t outsize);
 
+/* One directory entry, for programmatic listing (e.g. the desktop). */
+struct fs_dirent {
+    char     name[13];
+    int      is_dir;
+    uint32_t size;
+};
+
+/* Fill 'out' with up to 'max' entries from the root ("/") directory. Returns
+ * the number of entries written (hides '.', '..', volume and LFN records). */
+int  fs_readdir_root(struct fs_dirent *out, int max);
+
 /* Directory listing and navigation. */
 void fs_list(void);                     /* ls  */
 int  fs_cd(const char *name);           /* cd; 0 ok, -1 error */

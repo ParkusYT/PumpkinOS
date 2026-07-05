@@ -283,6 +283,34 @@ int fs_init(void) {
 }
 
 /* ---- ls ------------------------------------------------------------------- */
+int fs_readdir_root(struct fs_dirent *out, int max) {
+    if (!mounted || max <= 0)
+        return 0;
+
+    int count = 0;
+    uint8_t sec[512];
+    for (uint32_t idx = 0; count < max; idx++) {
+        uint32_t lba = dir_sector_lba(0, idx);        /* 0 = root directory */
+        if (lba == 0 || read_fs(lba, 1, sec) != 0) break;
+        for (int e = 0; e < 16 && count < max; e++) {
+            uint8_t *ent = sec + e * 32;
+            if (ent[0] == 0x00) goto done;
+            if (ent[0] == 0xE5 || ent[11] == ATTR_LFN || (ent[11] & ATTR_VOLUME))
+                continue;
+            if (ent[0] == '.') continue;              /* hide '.' and '..' */
+
+            format_name(ent, out[count].name);
+            out[count].is_dir = (ent[11] & ATTR_DIR) ? 1 : 0;
+            out[count].size = ent[28] | (ent[29] << 8) | (ent[30] << 16) |
+                              ((uint32_t)ent[31] << 24);
+            count++;
+        }
+    }
+done:
+    floppy_motor_off();
+    return count;
+}
+
 void fs_list(void) {
     if (!mounted) { console_write("ls: no filesystem mounted\n"); return; }
 

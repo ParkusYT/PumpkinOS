@@ -1,9 +1,10 @@
 /* ===========================================================================
  * PumpkinOS - a tiny graphical desktop
  * ---------------------------------------------------------------------------
- * Switches the display into 320x200 graphics, draws a desktop with a taskbar,
- * a live clock and a couple of draggable windows, and lets you push them around
- * with the mouse. Press Esc to return to the text-mode shell.
+ * Switches the display into graphics mode and draws a desktop: the files in
+ * the root directory as clickable icons, draggable windows, and a taskbar with
+ * a Start menu (Enter shell / Reboot / Power Off) and a live clock. Press Esc
+ * (or Start -> Enter shell) to return to the text-mode shell.
  * ========================================================================= */
 #ifndef PUMPKIN_DESKTOP_H
 #define PUMPKIN_DESKTOP_H
