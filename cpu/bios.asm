@@ -29,6 +29,10 @@ STACK16 equ 0x7BFC                 ; real-mode stack top (just below RELOC)
 bios_int:
     cli
 
+    ; Preserve the caller's GP registers FIRST - the copies below clobber
+    ; esi/edi/ecx, so saving after them would lose the caller's esi/edi.
+    pushad                         ; args now at [esp+0x24] (intno), [esp+0x28] (regs)
+
     ; Copy the relocatable block down to RELOC.
     mov  esi, reloc
     mov  edi, RELOC
@@ -36,9 +40,9 @@ bios_int:
     rep  movsb
 
     ; Patch the interrupt number and remember the caller's regs pointer.
-    mov  eax, [esp + 4]
+    mov  eax, [esp + 0x24]
     mov  [REBASE(ib)], al
-    mov  eax, [esp + 8]
+    mov  eax, [esp + 0x28]
     mov  [REBASE(saved_regs)], eax
 
     ; Copy the caller's registers into the relocated block (26 bytes).
@@ -47,8 +51,7 @@ bios_int:
     mov  ecx, 26
     rep  movsb
 
-    ; Preserve GP registers for the C caller, then save PM state.
-    pushad
+    ; Save PM state (GP registers were already pushed above).
     mov  [REBASE(saved_esp)], esp
     sidt [REBASE(saved_idt)]
     mov  eax, cr0

@@ -198,14 +198,76 @@ static void clear_regs(regs16_t *r) {
     r->di = r->si = r->bp = r->sp = r->bx = r->dx = r->cx = r->ax = 0;
     r->gs = r->fs = r->es = r->ds = r->flags = 0;
 }
+static uint16_t rd16b(volatile uint8_t *p, int off) {
+    return (uint16_t)(p[off] | (p[off + 1] << 8));
+}
 
-/* Set a high-res mode through the real VESA BIOS (int 0x10) using the real-mode
- * thunk. DISABLED: the thunk does not reliably preserve the C caller's register
- * state across the PM<->real-mode transition on real hardware, so mode setting
- * comes back corrupted. The pieces (cpu/bios.asm, the PCI framebuffer lookup,
- * the mode candidates below) are kept for a future rewrite that runs the whole
- * VBE sequence in a single real-mode excursion, holding no C state across it. */
+/* Set a high-resolution linear-framebuffer mode through the real VESA BIOS
+ * (int 0x10) via the real-mode thunk - the universal path that works on real
+ * hardware. We try a short list of standard VBE mode numbers highest-first,
+ * read each one's real mode-info block to get its dimensions, pitch and linear
+ * framebuffer, and set the first usable one. Returns 0 on success. */
 static int bios_vbe_setup(void) {
+    volatile uint8_t *info = phys_ptr(VBE_INFO);
+    volatile uint8_t *mi   = phys_ptr(VBE_MODE);
+    regs16_t r;
+    uint8_t sm1, sm2;
+
+    pic_mask_all(&sm1, &sm2);
+
+    /* 4F00: confirm a VESA BIOS is present. */
+    for (int i = 0; i < 512; i++) info[i] = 0;
+    info[0] = 'V'; info[1] = 'B'; info[2] = 'E'; info[3] = '2';
+    clear_regs(&r);
+    r.ax = 0x4F00; r.di = VBE_INFO;
+    bios_int(0x10, &r);
+    if (r.ax != 0x004F ||
+        !(info[0] == 'V' && info[1] == 'E' && info[2] == 'S' && info[3] == 'A')) {
+        pic_unmask(sm1, sm2);
+        return -1;
+    }
+
+    /* Standard VBE mode numbers, highest resolution first (24 then 16 bpp). */
+    static const uint16_t cand[] = {
+        0x118, 0x117,   /* 1024x768  x24 / x16 */
+        0x115, 0x114,   /* 800x600   x24 / x16 */
+        0x112, 0x111,   /* 640x480   x24 / x16 */
+    };
+
+    for (unsigned i = 0; i < sizeof(cand) / sizeof(cand[0]); i++) {
+        clear_regs(&r);
+        r.ax = 0x4F01; r.cx = cand[i]; r.di = VBE_MODE;
+        bios_int(0x10, &r);
+        if (r.ax != 0x004F) continue;
+
+        uint16_t attr = rd16b(mi, 0);
+        if ((attr & 0x90) != 0x90) continue;          /* graphics + linear FB */
+        int bpp = mi[25];
+        if (bpp != 16 && bpp != 24 && bpp != 32) continue;
+        int w = rd16b(mi, 18), h = rd16b(mi, 20);
+        uint16_t pitch = rd16b(mi, 50);
+        if (pitch == 0) pitch = rd16b(mi, 16);
+        uint32_t lfb = (uint32_t)rd16b(mi, 40) | ((uint32_t)rd16b(mi, 42) << 16);
+        if (w == 0 || h == 0 || lfb == 0) continue;
+
+        clear_regs(&r);
+        r.ax = 0x4F02; r.bx = (uint16_t)(cand[i] | 0x4000);   /* set, LFB bit */
+        bios_int(0x10, &r);
+        if (r.ax != 0x004F) continue;
+
+        pic_unmask(sm1, sm2);
+        g_kind   = 2;
+        g_mode   = 1;
+        g_width  = w;
+        g_height = h;
+        g_bpp    = bpp;
+        g_pitch  = pitch;
+        map_range(lfb, (uint32_t)pitch * h);
+        g_fb = (uint8_t *)phys_ptr(lfb);
+        return 0;
+    }
+
+    pic_unmask(sm1, sm2);
     return -1;
 }
 
