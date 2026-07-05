@@ -46,8 +46,6 @@ static uint8_t  mac[6];
 static int      present;
 static int      tx_cur;
 static int      rx_offset;
-static uint32_t tx_count, rx_count, tx_err;
-static uint16_t isr_seen;              /* OR of every ISR value we've polled */
 
 static uint32_t phys_of(const void *p) {
     return (uint32_t)(uintptr_t)p;      /* identity-mapped low memory */
@@ -139,16 +137,13 @@ int rtl8139_send(const void *frame, int len) {
 
     /* Wait for transmit-OK so the frame is really on the wire (and the
      * descriptor is free) before we poll for a reply. */
-    int ok = 0;
     for (int i = 0; i < 400000; i++) {
         uint32_t st = inl(io_base + REG_TSD0 + n * 4);
-        if (st & 0x8000) { ok = 1; break; }             /* TOK  */
+        if (st & 0x8000) break;                         /* TOK  */
         if (st & ((1u << 30) | (1u << 14))) break;      /* TABT / TUN */
         io_wait();
     }
 
-    tx_count++;
-    if (!ok) tx_err++;
     tx_cur = (n + 1) & 3;
     return 0;
 }
@@ -173,7 +168,6 @@ int rtl8139_poll(void *out, int maxlen) {
         return 0;
 
     uint16_t isr = inw(io_base + REG_ISR);
-    isr_seen |= isr;
     if (isr & 0x0050) {                         /* RXOVW or FOVW -> recover */
         rtl8139_reset_rx();
         return 0;
@@ -184,7 +178,6 @@ int rtl8139_poll(void *out, int maxlen) {
     uint8_t *p = rx_buffer + rx_offset;
     uint16_t status = (uint16_t)(p[0] | (p[1] << 8));
     uint16_t length = (uint16_t)(p[2] | (p[3] << 8));   /* frame length + 4 (CRC) */
-    rx_count++;
 
     int pktlen = 0;
     if ((status & 0x01) && length >= 4) {       /* ROK, sane length */
@@ -203,21 +196,7 @@ int rtl8139_poll(void *out, int maxlen) {
     return pktlen;
 }
 
-uint32_t rtl8139_tx_count(void)  { return tx_count; }
-uint32_t rtl8139_rx_count(void)  { return rx_count; }
-uint32_t rtl8139_tx_err(void)    { return tx_err; }
-uint16_t rtl8139_isr_seen(void)  { return isr_seen; }
-uint8_t  rtl8139_msr(void)       { return present ? inb(io_base + 0x58) : 0xFF; }
-
-/* Raw register reads (for the 'netdbg' diagnostic). */
-uint8_t  rtl8139_reg8(uint8_t off)  { return present ? inb(io_base + off) : 0; }
-uint16_t rtl8139_reg16(uint8_t off) { return present ? inw(io_base + off) : 0; }
-uint32_t rtl8139_reg32(uint8_t off) { return present ? inl(io_base + off) : 0; }
-
-/* Write RCR and read it straight back - tells us if RCR is writable at all. */
-uint32_t rtl8139_rcr_test(void) {
-    if (!present)
-        return 0;
-    outl(io_base + REG_RCR, RCR_CONFIG);
-    return inl(io_base + REG_RCR);
+/* Media Status Register (0x58): bit 2 clear = link up. */
+int rtl8139_link_up(void) {
+    return present ? ((inb(io_base + 0x58) & 0x04) == 0) : 0;
 }

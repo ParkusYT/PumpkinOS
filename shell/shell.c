@@ -21,6 +21,8 @@
 #include "net.h"
 #include "dhcp.h"
 #include "dns.h"
+#include "icmp.h"
+#include "tcp.h"
 #include "string.h"
 #include "io.h"
 
@@ -48,7 +50,7 @@ static void cmd_help(void) {
     console_write("  Files   : ls  cd <d>  pwd  cat <f>  write <f> <t>  touch <f>\n");
     console_write("            mkdir <d>  rm [-r] <f>  rmdir <d>\n");
     console_write("  System  : disks [read N]  meminfo  date  uptime  sleep <s>\n");
-    console_write("  Network : net  dhcp  dns <host>\n");
+    console_write("  Network : net  dhcp  dns <host>  ping <host>  http <host>\n");
     console_write("  Programs: run <file.elf>  desktop\n");
     console_write("  Power   : reboot  poweroff  halt\n");
 }
@@ -306,23 +308,8 @@ static void cmd_net(void) {
         return;
     }
     console_write("  MAC     : "); print_mac(); console_putc('\n');
-
-    uint8_t msr = rtl8139_msr();
     console_write("  link    : ");
-    console_write((msr & 0x04) ? "DOWN" : "up");
-    console_write((msr & 0x08) ? "  10Mbps" : "  100Mbps");
-    console_write("   (MSR="); console_write_hex(msr); console_write(")\n");
-    console_write("  TX / RX : ");
-    console_write_dec(rtl8139_tx_count()); console_write(" / ");
-    console_write_dec(rtl8139_rx_count()); console_write(" frames");
-    if (rtl8139_tx_err()) {
-        console_write("  (");
-        console_write_dec(rtl8139_tx_err());
-        console_write(" TX errors)");
-    }
-    console_putc('\n');
-    console_write("  ISR seen: "); console_write_hex(rtl8139_isr_seen());
-    console_write("  (bit0 RxOK, bit2 TxOK, bit4 RxOverflow)\n");
+    console_write(rtl8139_link_up() ? "up\n" : "down\n");
 
     console_write("  status  : ");
     if (!net_up) { console_write("no IP  (run 'dhcp')\n"); return; }
@@ -331,29 +318,6 @@ static void cmd_net(void) {
     console_write("  netmask : "); print_ip(net_mask);    console_putc('\n');
     console_write("  gateway : "); print_ip(net_gateway); console_putc('\n');
     console_write("  DNS     : "); print_ip(net_dns);     console_putc('\n');
-}
-
-/* Raw RTL8139 register dump for diagnosing a dead RX on real hardware. */
-static void cmd_netdbg(void) {
-    if (!rtl8139_present()) {
-        console_write("no network card detected\n");
-        return;
-    }
-    console_write("  CMD   = "); console_write_hex(rtl8139_reg8(0x37));
-    console_write("  (bit3 RxEnable, bit2 TxEnable, bit0 BufEmpty)\n");
-    console_write("  9346CR= "); console_write_hex(rtl8139_reg8(0x50));
-    console_write("  (bits7-6: 00 normal, 11 config-write)\n");
-    console_write("  RCR   = "); console_write_hex(rtl8139_reg32(0x44)); console_putc('\n');
-    console_write("  RCRtst= "); console_write_hex(rtl8139_rcr_test());
-    console_write("  (RCR re-written then read back)\n");
-    console_write("  TCR   = "); console_write_hex(rtl8139_reg32(0x40)); console_putc('\n');
-    console_write("  RBSTRT= "); console_write_hex(rtl8139_reg32(0x30)); console_putc('\n');
-    console_write("  CAPR  = "); console_write_hex(rtl8139_reg16(0x38)); console_putc('\n');
-    console_write("  CBR   = "); console_write_hex(rtl8139_reg16(0x3A));
-    console_write("  (RX write pointer; 0 = card wrote nothing)\n");
-    console_write("  ISR   = "); console_write_hex(rtl8139_reg16(0x3E)); console_putc('\n');
-    console_write("  IMR   = "); console_write_hex(rtl8139_reg16(0x3C)); console_putc('\n');
-    console_write("  MSR   = "); console_write_hex(rtl8139_reg8(0x58)); console_putc('\n');
 }
 
 static void cmd_dhcp(void) {
@@ -396,6 +360,122 @@ static void cmd_dns(const char *args) {
         console_write("could not resolve\n");
         console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     }
+}
+
+/* Parse a dotted-quad "a.b.c.d" into a host-order IP. Returns 1 on success. */
+static int parse_ipv4(const char *s, uint32_t *out) {
+    uint32_t ip = 0;
+    for (int part = 0; part < 4; part++) {
+        if (*s < '0' || *s > '9') return 0;
+        int v = 0, digits = 0;
+        while (*s >= '0' && *s <= '9') { v = v * 10 + (*s++ - '0'); digits++; }
+        if (v > 255 || digits > 3) return 0;
+        ip = (ip << 8) | (uint32_t)v;
+        if (part < 3) { if (*s != '.') return 0; s++; }
+    }
+    if (*s != '\0') return 0;
+    *out = ip;
+    return 1;
+}
+
+/* Turn "1.2.3.4" or a hostname into an IP, resolving via DNS when needed. */
+static int resolve_target(const char *name, uint32_t *out) {
+    if (parse_ipv4(name, out))
+        return 1;
+    return dns_resolve(name, out);
+}
+
+static void cmd_ping(const char *args) {
+    if (args[0] == '\0') { console_write("usage: ping <host>\n"); return; }
+    if (!net_up) { console_write("network is down; run 'dhcp' first\n"); return; }
+
+    uint32_t ip;
+    if (!resolve_target(args, &ip)) {
+        console_set_color(VGA_LIGHT_RED, VGA_BLACK);
+        console_write("ping: cannot resolve "); console_write(args); console_putc('\n');
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+        return;
+    }
+
+    console_write("PING "); print_ip(ip); console_write("\n");
+    int ok = 0;
+    for (int i = 0; i < 4; i++) {
+        uint32_t rtt = 0;
+        if (icmp_ping(ip, 1000, &rtt)) {
+            ok++;
+            console_write("  reply "); console_write_dec(i + 1);
+            console_write(": time="); console_write_dec(rtt); console_write(" ms\n");
+        } else {
+            console_write("  reply "); console_write_dec(i + 1);
+            console_write(": timeout\n");
+        }
+    }
+    console_write("  "); console_write_dec(ok); console_write("/4 received\n");
+}
+
+/* http <host> [path] - fetch a URL over TCP/80 and print the response. */
+static void cmd_http(const char *args) {
+    if (args[0] == '\0') { console_write("usage: http <host> [path]\n"); return; }
+    if (!net_up) { console_write("network is down; run 'dhcp' first\n"); return; }
+
+    /* split "<host> [path]" */
+    char host[128];
+    const char *path = "/";
+    int i = 0;
+    while (args[i] && args[i] != ' ' && i < (int)sizeof(host) - 1) { host[i] = args[i]; i++; }
+    host[i] = '\0';
+    while (args[i] == ' ') i++;
+    if (args[i]) path = &args[i];
+
+    uint32_t ip;
+    if (!resolve_target(host, &ip)) {
+        console_set_color(VGA_LIGHT_RED, VGA_BLACK);
+        console_write("http: cannot resolve "); console_write(host); console_putc('\n');
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+        return;
+    }
+
+    console_write("Connecting to "); print_ip(ip); console_write(":80 ...\n");
+    struct tcp_conn c;
+    if (!tcp_connect(&c, ip, 80)) {
+        console_set_color(VGA_LIGHT_RED, VGA_BLACK);
+        console_write("http: connection failed\n");
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+        return;
+    }
+
+    /* Build "GET <path> HTTP/1.0\r\nHost: <host>\r\nConnection: close\r\n\r\n" */
+    char req[384];
+    int n = 0;
+    const char *p;
+    for (p = "GET ";               *p; p++) req[n++] = *p;
+    for (p = path;                 *p; p++) req[n++] = *p;
+    for (p = " HTTP/1.0\r\nHost: "; *p; p++) req[n++] = *p;
+    for (p = host;                 *p; p++) req[n++] = *p;
+    for (p = "\r\nConnection: close\r\n\r\n"; *p; p++) req[n++] = *p;
+
+    if (tcp_send(&c, req, n) < 0) {
+        console_set_color(VGA_LIGHT_RED, VGA_BLACK);
+        console_write("http: send failed\n");
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+        tcp_close(&c);
+        return;
+    }
+
+    /* Stream the response to the console. */
+    static char buf[1500];
+    int total = 0;
+    for (;;) {
+        int r = tcp_recv(&c, buf, sizeof(buf) - 1, 5000);
+        if (r <= 0) break;                       /* EOF, error or timeout */
+        buf[r] = '\0';
+        console_write(buf);
+        total += r;
+    }
+    console_write("\n[");
+    console_write_dec(total);
+    console_write(" bytes]\n");
+    tcp_close(&c);
 }
 
 /* run <file.elf> - load an ELF program off the disk and run it in ring 3. */
@@ -513,8 +593,10 @@ static void shell_execute(char *line) {
         cmd_dhcp();
     else if (strcmp(cmd, "dns") == 0 || strcmp(cmd, "nslookup") == 0)
         cmd_dns(args);
-    else if (strcmp(cmd, "netdbg") == 0)
-        cmd_netdbg();
+    else if (strcmp(cmd, "ping") == 0)
+        cmd_ping(args);
+    else if (strcmp(cmd, "http") == 0)
+        cmd_http(args);
     else if (strcmp(cmd, "run") == 0 || strcmp(cmd, "exec") == 0)
         cmd_run(args);
     else if (strcmp(cmd, "desktop") == 0 || strcmp(cmd, "gui") == 0)

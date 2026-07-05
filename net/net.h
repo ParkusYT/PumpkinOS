@@ -51,9 +51,32 @@ struct ip_hdr {
 
 struct udp_hdr { uint16_t sport, dport, len, csum; } __attribute__((packed));
 
+struct icmp_hdr {
+    uint8_t  type, code;
+    uint16_t csum, id, seq;
+} __attribute__((packed));
+
+struct tcp_hdr {
+    uint16_t sport, dport;
+    uint32_t seq, ack;
+    uint8_t  off, flags;
+    uint16_t window, csum, urg;
+} __attribute__((packed));
+
 #define ETH_ARP  0x0806
 #define ETH_IPV4 0x0800
-#define IP_PROTO_UDP 17
+#define IP_PROTO_ICMP 1
+#define IP_PROTO_TCP  6
+#define IP_PROTO_UDP  17
+
+/* A received IP datagram handed up to a protocol layer. 'l4' points into an
+ * internal buffer and is only valid until the next net_poll(). */
+struct net_rx {
+    uint32_t src_ip;
+    uint8_t  proto;
+    uint8_t *l4;        /* L4 header (after IP options) */
+    int      l4len;     /* L4 bytes available */
+};
 
 /* ---- configuration (filled in by DHCP) ------------------------------------ */
 extern uint8_t  net_mac[6];
@@ -68,14 +91,21 @@ int  net_init(void);
 
 uint16_t ip_checksum(const void *data, int len);
 
-/* Send a UDP datagram to dst_ip (use IP_BROADCAST for 255.255.255.255).
- * Resolves the next hop by ARP as needed. Returns 0 on success. */
+/* Send one IPv4 datagram carrying 'l4' (proto = IP_PROTO_*). Resolves the next
+ * hop by ARP (via the gateway when off-link). Returns 0 on success. */
+int net_send_ip(uint32_t dst_ip, uint8_t proto, const void *l4, int l4len);
+
+/* Poll one received frame. Handles ARP and answers incoming pings internally.
+ * If an IP datagram for the upper layers arrives, fills *r (valid until the
+ * next call) and returns 1; otherwise returns 0. */
+int net_poll(struct net_rx *r);
+
+/* Send a UDP datagram to dst_ip (use IP_BROADCAST for 255.255.255.255). */
 int net_send_udp(uint32_t dst_ip, uint16_t src_port, uint16_t dst_port,
                  const void *data, int len);
 
 /* Poll for a UDP datagram addressed to 'my_port', up to 'timeout_ms'. Returns
- * the payload length (0 on timeout) and fills src_ip/src_port + buf. Handles
- * incoming ARP (replies to who-has for us, caches answers) while waiting. */
+ * the payload length (0 on timeout) and fills src_ip/src_port + buf. */
 int net_recv_udp(uint16_t my_port, uint32_t *src_ip, uint16_t *src_port,
                  void *buf, int maxlen, int timeout_ms);
 
