@@ -86,36 +86,67 @@ void gfx_text(int x, int y, const char *s, uint8_t fg, int bg) {
 
 int gfx_text_width(const char *s) { return (int)strlen(s) * FONT_W; }
 
-void gfx_present(void) {
+void gfx_present_rect(int x, int y, int w, int h) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > gw) w = gw - x;
+    if (y + h > gh) h = gh - y;
+    if (w <= 0 || h <= 0) return;
+
     uint8_t *fb = vga_framebuffer();
     uint32_t pitch = vga_pitch();
     int bpp = vga_bpp();
 
-    for (int y = 0; y < gh; y++) {
-        uint8_t *src = buf + y * gw;
-        uint8_t *row = fb + (uint32_t)y * pitch;
+    for (int yy = 0; yy < h; yy++) {
+        uint8_t *src = buf + (y + yy) * gw + x;
+        uint8_t *row = fb + (uint32_t)(y + yy) * pitch;
 
         if (bpp == 8) {
-            memcpy(row, src, gw);
+            memcpy(row + x, src, w);
         } else if (bpp == 32) {
-            uint32_t *dst = (uint32_t *)row;
-            for (int x = 0; x < gw; x++)
-                dst[x] = lut[src[x]];
+            uint32_t *dst = (uint32_t *)row + x;
+            for (int xx = 0; xx < w; xx++)
+                dst[xx] = lut[src[xx]];
         } else if (bpp == 24) {
-            for (int x = 0; x < gw; x++) {
-                uint32_t c = lut[src[x]];
-                uint8_t *p = row + x * 3;
-                p[0] = (uint8_t)(c);         /* B */
-                p[1] = (uint8_t)(c >> 8);    /* G */
-                p[2] = (uint8_t)(c >> 16);   /* R */
+            uint8_t *p = row + x * 3;
+            for (int xx = 0; xx < w; xx++) {
+                uint32_t c = lut[src[xx]];
+                *p++ = (uint8_t)(c);         /* B */
+                *p++ = (uint8_t)(c >> 8);    /* G */
+                *p++ = (uint8_t)(c >> 16);   /* R */
             }
         } else {                              /* 16 bpp (5:6:5) */
-            uint16_t *dst = (uint16_t *)row;
-            for (int x = 0; x < gw; x++) {
-                uint32_t c = lut[src[x]];
+            uint16_t *dst = (uint16_t *)row + x;
+            for (int xx = 0; xx < w; xx++) {
+                uint32_t c = lut[src[xx]];
                 uint8_t r = (uint8_t)(c >> 16), g = (uint8_t)(c >> 8), b = (uint8_t)c;
-                dst[x] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
+                dst[xx] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
             }
         }
+    }
+}
+
+void gfx_present(void) {
+    gfx_present_rect(0, 0, gw, gh);
+}
+
+void gfx_fb_pixel(int x, int y, uint8_t color) {
+    if (x < 0 || x >= gw || y < 0 || y >= gh)
+        return;
+    uint8_t *row = vga_framebuffer() + (uint32_t)y * vga_pitch();
+    int bpp = vga_bpp();
+    if (bpp == 8) {
+        row[x] = color;
+        return;
+    }
+    uint32_t c = lut[color];
+    if (bpp == 32) {
+        ((uint32_t *)row)[x] = c;
+    } else if (bpp == 24) {
+        uint8_t *p = row + x * 3;
+        p[0] = (uint8_t)c; p[1] = (uint8_t)(c >> 8); p[2] = (uint8_t)(c >> 16);
+    } else {
+        uint8_t r = (uint8_t)(c >> 16), g = (uint8_t)(c >> 8), b = (uint8_t)c;
+        ((uint16_t *)row)[x] = (uint16_t)(((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3));
     }
 }

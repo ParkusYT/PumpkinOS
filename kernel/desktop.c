@@ -140,7 +140,12 @@ static const char *const cursor_bmp[] = {
     0,
 };
 
-static void draw_cursor(int mx, int my) {
+#define CUR_COLS 8
+#define CUR_ROWS 12
+
+/* Paint the cursor straight onto the framebuffer (over the composed scene),
+ * so moving it never touches the back buffer or triggers a full blit. */
+static void draw_cursor_fb(int mx, int my) {
     int s = cur_scale;
     for (int row = 0; cursor_bmp[row]; row++) {
         const char *line = cursor_bmp[row];
@@ -149,7 +154,9 @@ static void draw_cursor(int mx, int my) {
             if (line[col] == '#')      c = COL_BLACK;
             else if (line[col] == '.') c = COL_WHITE;
             else continue;
-            gfx_fill_rect(mx + col * s, my + row * s, s, s, c);
+            for (int sy = 0; sy < s; sy++)
+                for (int sx = 0; sx < s; sx++)
+                    gfx_fb_pixel(mx + col * s + sx, my + row * s + sy, c);
         }
     }
 }
@@ -195,7 +202,9 @@ static void draw_taskbar(void) {
 }
 
 /* ---- compositor ----------------------------------------------------------- */
-static void redraw(int mx, int my) {
+/* Compose the whole scene into the back buffer (no cursor - that goes straight
+ * to the framebuffer afterwards). */
+static void render_scene(void) {
     gfx_clear(COL_DESKTOP);
     for (int i = 0; i < MAX_WIN; i++) {
         int idx = zorder[i];
@@ -203,8 +212,6 @@ static void redraw(int mx, int my) {
             draw_window(&wins[idx], i == MAX_WIN - 1);
     }
     draw_taskbar();
-    draw_cursor(mx, my);
-    gfx_present();
 }
 
 static int in_rect(int px, int py, int x, int y, int w, int h) {
@@ -225,7 +232,10 @@ void desktop_run(void) {
     windows_init();
     mouse_set_bounds(W, H);
 
+    int cw = CUR_COLS * cur_scale, ch = CUR_ROWS * cur_scale;
+
     int mx = mouse_x(), my = mouse_y();
+    int cx = mx, cy = my;                 /* where the cursor is drawn now */
     int prev_buttons = 0;
     int dragging = -1, grab_dx = 0, grab_dy = 0;
 
@@ -233,13 +243,21 @@ void desktop_run(void) {
     struct rtc_time last_clock;
     rtc_read(&last_clock);
 
+    /* Compose once and show it, then paint the cursor on top. */
+    render_scene();
+    gfx_present();
+    draw_cursor_fb(mx, my);
+    cx = mx; cy = my;
+
     for (;;) {
         if (keyboard_haschar()) {
             if (keyboard_getchar() == 27)
                 break;
         }
 
-        int changed = 0;
+        int scene_full = 0;               /* raise/close -> full blit           */
+        int scene_taskbar = 0;            /* clock ticked -> blit taskbar only  */
+        int dirty = 0, dx0 = 0, dy0 = 0, dw = 0, dh = 0;  /* drag -> blit region */
 
         uint32_t seq = mouse_seq();
         if (seq != last_seq) {
@@ -257,6 +275,7 @@ void desktop_run(void) {
                     if (!w->open || !in_rect(mx, my, w->x, w->y, w->w, w->h))
                         continue;
                     raise_window(idx);
+                    scene_full = 1;                    /* raise reorders windows */
                     if (in_rect(mx, my, close_box_x(w), w->y + 2,
                                 TITLE_H - 3, TITLE_H - 3)) {
                         w->open = 0;
@@ -273,28 +292,57 @@ void desktop_run(void) {
 
             if (dragging >= 0 && left) {
                 struct window *w = &wins[dragging];
+                int ox = w->x, oy = w->y;
                 int nx = mx - grab_dx, ny = my - grab_dy;
                 if (nx < -(w->w - 48)) nx = -(w->w - 48);
                 if (nx > W - 48)       nx = W - 48;
                 if (ny < 0) ny = 0;
                 if (ny > H - TB_H - TITLE_H) ny = H - TB_H - TITLE_H;
-                w->x = nx;
-                w->y = ny;
+                if (nx != ox || ny != oy) {
+                    w->x = nx;
+                    w->y = ny;
+                    /* dirty region = old + new window box (+ border/shadow) */
+                    int lo_x = (ox < nx ? ox : nx) - 1;
+                    int lo_y = (oy < ny ? oy : ny) - 1;
+                    int hi_x = (ox > nx ? ox : nx) + w->w + 6;
+                    int hi_y = (oy > ny ? oy : ny) + w->h + 6;
+                    dirty = 1;
+                    dx0 = lo_x; dy0 = lo_y; dw = hi_x - lo_x; dh = hi_y - lo_y;
+                }
             }
 
             prev_buttons = buttons;
-            changed = 1;
         }
 
         struct rtc_time now;
         rtc_read(&now);
         if (now.second != last_clock.second) {
             last_clock = now;
-            changed = 1;
+            scene_taskbar = 1;
         }
 
-        if (changed)
-            redraw(mx, my);
+        if (scene_full) {
+            /* full recompose + blit; the blit also wipes the old cursor */
+            render_scene();
+            gfx_present();
+            draw_cursor_fb(mx, my);
+            cx = mx; cy = my;
+        } else {
+            if (dirty) {                      /* dragging: recompose, blit region */
+                render_scene();
+                gfx_present_rect(dx0, dy0, dw, dh);
+            } else if (scene_taskbar) {
+                render_scene();
+                gfx_present_rect(0, H - TB_H, W, TB_H);
+                if (cy + ch > H - TB_H)       /* cursor overlapped the taskbar */
+                    draw_cursor_fb(cx, cy);
+            }
+            if (dirty || mx != cx || my != cy) {   /* move cursor: save-under */
+                gfx_present_rect(cx, cy, cw, ch);   /* restore scene under old */
+                draw_cursor_fb(mx, my);
+                cx = mx; cy = my;
+            }
+        }
 
         __asm__ volatile("sti; hlt");
     }

@@ -35,6 +35,12 @@ void gfx_char(int x, int y, char c, uint8_t fg, int bg);   /* bg < 0 = transpare
 void gfx_text(int x, int y, const char *s, uint8_t fg, int bg);
 int  gfx_text_width(const char *s);
 
+/* Blit the whole back buffer, or just a rectangle of it, to the framebuffer. */
 void gfx_present(void);
+void gfx_present_rect(int x, int y, int w, int h);
+
+/* Write one pixel straight to the framebuffer (not the back buffer) - used to
+ * paint the mouse cursor on top without disturbing the composed scene. */
+void gfx_fb_pixel(int x, int y, uint8_t color);
 
 #endif /* PUMPKIN_GFX_H */
