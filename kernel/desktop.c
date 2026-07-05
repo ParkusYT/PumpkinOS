@@ -15,6 +15,7 @@
 #include "acpi.h"
 #include "ac97.h"
 #include "fat12.h"
+#include "editor.h"
 #include "io.h"
 #include "string.h"
 #include <stdint.h>
@@ -226,7 +227,7 @@ static void windows_init(void) {
     w->open = 1;
     set_str(w->title, "Welcome to PumpkinOS", sizeof(w->title));
     set_str(w->body[0], "Files in / show as icons.",   LINE_C);
-    set_str(w->body[1], "Click one to see details.",   LINE_C);
+    set_str(w->body[1], "Click a .txt to edit it.",     LINE_C);
     set_str(w->body[2], "Click Start: shell / power.", LINE_C);
     set_str(w->body[3], "Drag title bars; [x] closes.", LINE_C);
     set_str(w->body[4], "Esc returns to the shell.",   LINE_C);
@@ -401,7 +402,16 @@ static int in_rect(int px, int py, int x, int y, int w, int h) {
 }
 
 /* ---- click handling ------------------------------------------------------- */
-enum { ACT_NONE, ACT_SCENE, ACT_EXIT, ACT_REBOOT, ACT_POWEROFF };
+enum { ACT_NONE, ACT_SCENE, ACT_EXIT, ACT_REBOOT, ACT_POWEROFF, ACT_EDIT };
+
+static char edit_name[13];      /* file to open in the editor (for ACT_EDIT) */
+
+/* A .TXT file is openable in the text editor; everything else just shows info. */
+static int is_text_file(const char *name) {
+    int n = (int)strlen(name);
+    return n >= 4 && name[n-4] == '.' &&
+           name[n-3] == 'T' && name[n-2] == 'X' && name[n-1] == 'T';
+}
 
 /* set by a title-bar grab so the move handler drags the window */
 static int dragging = -1, grab_dx, grab_dy;
@@ -454,7 +464,11 @@ static int handle_press(int mx, int my) {
             if (entries[ei].is_dir) {            /* descend into the folder */
                 wins[WIN_INFO].open = 0;
                 enter_dir(ei);
-            } else {                             /* file -> info window */
+            } else if (is_text_file(entries[ei].name)) {
+                sel_slot = slot;
+                set_str(edit_name, entries[ei].name, sizeof(edit_name));
+                return ACT_EDIT;                 /* open a text file in the editor */
+            } else {                             /* other file -> info window */
                 sel_slot = slot;
                 open_info(ei);
                 raise_window(WIN_INFO);
@@ -471,6 +485,35 @@ static int handle_press(int mx, int my) {
 static void leave_graphics(void) {
     gfx_shutdown();
     vga_leave_graphics();
+}
+
+/* Drop to text mode, run the text editor on 'edit_name' in the desktop's
+ * current directory, then re-enter graphics and rebuild the desktop. Returns 0
+ * on success, -1 if graphics couldn't be re-acquired (caller should bail). */
+static int open_in_editor(void) {
+    leave_graphics();
+
+    char saved[96];
+    set_str(saved, fs_cwd(), sizeof(saved));   /* restore the shell's cwd after */
+    fs_cd(cur_path);                           /* so the editor finds the file  */
+    editor_run(edit_name);
+    fs_cd(saved);
+
+    vga_enter_graphics();
+    if (gfx_init() != 0) {
+        vga_leave_graphics();
+        return -1;
+    }
+    W = gfx_width();
+    H = gfx_height();
+    big = (W >= 640);
+    cur_scale = big ? 2 : 1;
+    load_palette();
+    layout_icons();
+    layout_taskbar();
+    mouse_set_bounds(W, H);
+    reload_dir();                              /* the file's size may have changed */
+    return 0;
 }
 static void do_reboot(void) {
     leave_graphics();
@@ -566,6 +609,13 @@ void desktop_run(void) {
                     case ACT_EXIT:     goto done;
                     case ACT_REBOOT:   do_reboot();     break;   /* no return */
                     case ACT_POWEROFF: do_poweroff();   break;   /* no return */
+                    case ACT_EDIT:
+                        if (open_in_editor() != 0) return;       /* graphics gone */
+                        mx = mouse_x(); my = mouse_y();
+                        prev_buttons = 0;
+                        last_seq = mouse_seq();
+                        scene_full = 1;                          /* full redraw    */
+                        break;
                     case ACT_SCENE:    scene_full = 1;  break;
                     default: break;
                 }
