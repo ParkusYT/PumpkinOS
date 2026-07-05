@@ -16,6 +16,7 @@
 #include "ata.h"
 #include "acpi.h"
 #include "elf.h"
+#include "editor.h"
 #include "desktop.h"
 #include "rtl8139.h"
 #include "net.h"
@@ -49,7 +50,7 @@ static void cmd_help(void) {
     console_write("PumpkinShell (PKSH) commands:\n");
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     console_write("  General : help  clear  echo <text>  banner  about\n");
-    console_write("  Files   : ls  cd <d>  pwd  cat <f>  write <f> <t>  touch <f>\n");
+    console_write("  Files   : ls  cd <d>  pwd  cat <f>  edit <f>  write <f> <t>  touch <f>\n");
     console_write("            mkdir <d>  rm [-r] <f>  rmdir <d>\n");
     console_write("  System  : disks [read N]  meminfo  pci  audio  date  uptime  sleep <s>\n");
     console_write("  Network : net  dhcp  dns <host>  ping <host>  http <host>\n");
@@ -654,6 +655,10 @@ static void shell_execute(char *line) {
         cmd_ping(args);
     else if (strcmp(cmd, "http") == 0)
         cmd_http(args);
+    else if (strcmp(cmd, "edit") == 0 || strcmp(cmd, "ed") == 0) {
+        if (args[0] == '\0') console_write("usage: edit <file>\n");
+        else editor_run(args);
+    }
     else if (strcmp(cmd, "run") == 0 || strcmp(cmd, "exec") == 0)
         cmd_run(args);
     else if (strcmp(cmd, "desktop") == 0 || strcmp(cmd, "gui") == 0)

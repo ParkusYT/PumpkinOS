@@ -93,8 +93,17 @@ void keyboard_irq(void) {
     if (extended) {
         extended = 0;
         if (!(sc & 0x80)) {          /* press only */
-            if (sc == 0x48) kbd_enqueue(KEY_UP);
-            else if (sc == 0x50) kbd_enqueue(KEY_DOWN);
+            switch (sc) {
+                case 0x48: kbd_enqueue(KEY_UP);    break;
+                case 0x50: kbd_enqueue(KEY_DOWN);  break;
+                case 0x4B: kbd_enqueue(KEY_LEFT);  break;
+                case 0x4D: kbd_enqueue(KEY_RIGHT); break;
+                case 0x47: kbd_enqueue(KEY_HOME);  break;
+                case 0x4F: kbd_enqueue(KEY_END);   break;
+                case 0x49: kbd_enqueue(KEY_PGUP);  break;
+                case 0x51: kbd_enqueue(KEY_PGDN);  break;
+                case 0x53: kbd_enqueue(KEY_DEL);   break;
+            }
         }
         return;
     }
