@@ -1,0 +1,9 @@
+Welcome to your PumpkinOS desktop folder.
+
+The graphical desktop lets you browse the filesystem: double-click a
+folder to open it, use the ".." icon (top-left) to go back up, and click
+a file to see its details. The path you're in is shown on the taskbar,
+next to the Start button.
+
+Drop your own files in here - anything you put in /desktop shows up as an
+icon when you open this folder.

@@ -24,11 +24,16 @@ struct fs_dirent {
     char     name[13];
     int      is_dir;
     uint32_t size;
+    uint16_t cluster;               /* first cluster (to descend into a dir) */
 };
 
-/* Fill 'out' with up to 'max' entries from the root ("/") directory. Returns
- * the number of entries written (hides '.', '..', volume and LFN records). */
-int  fs_readdir_root(struct fs_dirent *out, int max);
+/* The root directory's cluster handle (pass to fs_readdir). */
+uint16_t fs_root_cluster(void);
+
+/* Fill 'out' with up to 'max' entries from the directory whose first cluster is
+ * 'cluster' (use fs_root_cluster() for "/"). Returns the number of entries
+ * written (hides '.', '..', volume and LFN records). */
+int  fs_readdir(uint16_t cluster, struct fs_dirent *out, int max);
 
 /* Directory listing and navigation. */
 void fs_list(void);                     /* ls  */

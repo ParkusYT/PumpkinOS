@@ -283,14 +283,16 @@ int fs_init(void) {
 }
 
 /* ---- ls ------------------------------------------------------------------- */
-int fs_readdir_root(struct fs_dirent *out, int max) {
+uint16_t fs_root_cluster(void) { return 0; }
+
+int fs_readdir(uint16_t cluster, struct fs_dirent *out, int max) {
     if (!mounted || max <= 0)
         return 0;
 
     int count = 0;
     uint8_t sec[512];
     for (uint32_t idx = 0; count < max; idx++) {
-        uint32_t lba = dir_sector_lba(0, idx);        /* 0 = root directory */
+        uint32_t lba = dir_sector_lba(cluster, idx);
         if (lba == 0 || read_fs(lba, 1, sec) != 0) break;
         for (int e = 0; e < 16 && count < max; e++) {
             uint8_t *ent = sec + e * 32;
@@ -303,6 +305,7 @@ int fs_readdir_root(struct fs_dirent *out, int max) {
             out[count].is_dir = (ent[11] & ATTR_DIR) ? 1 : 0;
             out[count].size = ent[28] | (ent[29] << 8) | (ent[30] << 16) |
                               ((uint32_t)ent[31] << 24);
+            out[count].cluster = (uint16_t)(ent[26] | (ent[27] << 8));
             count++;
         }
     }

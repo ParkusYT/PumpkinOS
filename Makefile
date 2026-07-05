@@ -70,10 +70,12 @@ UPROG_LD   := userprog/user.ld
 UPROG_OBJ  := $(BUILD)/hello.uo
 UPROG_ELF  := $(BUILD)/hello.elf
 
-# Extra files copied into the FAT12 filesystem (the kernel itself is also a
-# file, KERNEL.BIN, so it shows up in 'ls').
+# The FAT12 filesystem is organised into logical directories. fsroot/ mirrors
+# the on-disk tree (fsroot/docs -> /docs, fsroot/desktop -> /desktop, ...); the
+# kernel (KERNEL.BIN) stays in the root because the boot sector loads it from
+# there, and the ring-3 program is placed in /apps.
 FSROOT     := fsroot
-FS_FILES   := $(wildcard $(FSROOT)/*)
+FS_FILES   := $(shell find $(FSROOT) -type f)
 
 # KERNEL.BIN is loaded at 0x10000 by the boot sector and grows upward; it must
 # stay below the floppy DMA buffer at 0x80000 (and the stack at 0x90000). That
@@ -130,13 +132,13 @@ $(IMG): $(BOOT_BIN) $(KERNEL_BIN) $(UPROG_ELF) $(FS_FILES)
 	dd if=/dev/zero of=$(IMG) bs=512 count=2880 status=none
 	mkfs.fat -F 12 -n PUMPKIN $(IMG) >/dev/null
 	MTOOLS_SKIP_CHECK=1 mcopy -i $(IMG) $(KERNEL_BIN) ::KERNEL.BIN
-	MTOOLS_SKIP_CHECK=1 mcopy -i $(IMG) $(UPROG_ELF) ::HELLO.ELF
-	@for f in $(FS_FILES); do \
-	    dest=$$(basename "$$f" | tr 'a-z' 'A-Z'); \
-	    MTOOLS_SKIP_CHECK=1 mcopy -i $(IMG) "$$f" "::$$dest"; \
+	MTOOLS_SKIP_CHECK=1 mmd   -i $(IMG) ::apps
+	MTOOLS_SKIP_CHECK=1 mcopy -i $(IMG) $(UPROG_ELF) ::apps/HELLO.ELF
+	@for d in $(FSROOT)/*/; do dir=$${d%/}; \
+	    MTOOLS_SKIP_CHECK=1 mcopy -s -i $(IMG) "$$dir" :: ; \
 	done
 	dd if=$(BOOT_BIN) of=$(IMG) conv=notrunc status=none
-	@echo "Built $(IMG) (1.44 MB FAT12 floppy: boot sector + KERNEL.BIN + files)."
+	@echo "Built $(IMG) (1.44 MB FAT12 floppy: /KERNEL.BIN, /apps, /docs, /desktop)."
 
 $(BUILD):
 	mkdir -p $(BUILD)

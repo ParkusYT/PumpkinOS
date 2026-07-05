@@ -19,10 +19,18 @@ Allocation Table, seeks to it, reads it, and continues until it reaches the
 end-of-chain marker. If you can read this final sentence in full, then
 multi-cluster reads over the real floppy controller are working correctly.
 
-Try these too:
-  ls
-  cat poem.txt
-  cat about.txt
+The disk is organised into folders:
+  /            the kernel itself (KERNEL.BIN), loaded here by the boot sector
+  /apps        runnable ELF programs
+  /docs        this README plus ABOUT.TXT and POEM.TXT
+  /desktop     a place for your own files
 
-To add your own files, drop them into the fsroot/ directory and run 'make' -
-the build reformats the FAT12 image and copies them in for you.
+Try these (from the root directory):
+  ls
+  cat about.txt
+  cd apps
+  run HELLO.ELF
+
+To add your own files, drop them into the matching fsroot/ subdirectory (e.g.
+fsroot/docs) and run 'make' - the build reformats the FAT12 image and recreates
+the /apps, /docs and /desktop folders for you.

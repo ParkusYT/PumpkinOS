@@ -78,11 +78,50 @@ static char *append_uint(char *p, uint32_t v) {
     return p;
 }
 
-/* ---- root-directory icons ------------------------------------------------- */
+/* ---- directory icons + navigation ----------------------------------------- */
 #define MAX_ICONS 32
+#define MAX_DEPTH 12
 static struct fs_dirent entries[MAX_ICONS];
 static int nentries;
-static int selected = -1;
+static int sel_slot = -1;                   /* highlighted grid slot, -1 none */
+
+/* A stack of directory clusters we've descended through, plus their names, so
+ * we can walk back up and show the path. Slot 0 is always the root. */
+static uint16_t dir_stack[MAX_DEPTH];
+static char     name_stack[MAX_DEPTH][13];
+static int      dir_depth;
+static char     cur_path[80];
+
+/* When not at the root, grid slot 0 is a ".." (go up) entry. */
+static int base_slot(void) { return dir_depth > 1 ? 1 : 0; }
+
+static void build_path(void) {
+    char *p = cur_path;
+    *p++ = '/';
+    for (int i = 1; i < dir_depth; i++) {
+        for (char *n = name_stack[i]; *n; n++) *p++ = *n;
+        if (i < dir_depth - 1) *p++ = '/';
+    }
+    *p = '\0';
+}
+
+static void reload_dir(void) {
+    nentries = fs_readdir(dir_stack[dir_depth - 1], entries, MAX_ICONS);
+    sel_slot = -1;
+    build_path();
+}
+
+static void enter_dir(int ei) {
+    if (dir_depth >= MAX_DEPTH) return;
+    dir_stack[dir_depth] = entries[ei].cluster;
+    set_str(name_stack[dir_depth], entries[ei].name, 13);
+    dir_depth++;
+    reload_dir();
+}
+
+static void go_up(void) {
+    if (dir_depth > 1) { dir_depth--; reload_dir(); }
+}
 
 static int cellw, cellh, icon_pad, icon_cols, glyph_w, glyph_h;
 
@@ -96,37 +135,43 @@ static void layout_icons(void) {
     if (icon_cols < 1) icon_cols = 1;
 }
 
-static void icon_pos(int idx, int *ix, int *iy) {
-    *ix = icon_pad + (idx % icon_cols) * cellw;
-    *iy = icon_pad + (idx / icon_cols) * cellh;
+static void icon_pos(int slot, int *ix, int *iy) {
+    *ix = icon_pad + (slot % icon_cols) * cellw;
+    *iy = icon_pad + (slot / icon_cols) * cellh;
 }
 
-static void draw_icon(int idx) {
+/* Draw one grid slot: a folder, a file page, or the ".." go-up glyph. */
+static void draw_slot(int slot, const char *name, int is_dir, int is_up) {
     int ix, iy;
-    icon_pos(idx, &ix, &iy);
-    const struct fs_dirent *e = &entries[idx];
+    icon_pos(slot, &ix, &iy);
 
-    if (idx == selected)
+    if (slot == sel_slot)
         gfx_fill_rect(ix + 2, iy, cellw - 4, cellh - 2, COL_SELECT);
 
     int gx = ix + (cellw - glyph_w) / 2;
     int gy = iy + 3;
 
-    if (e->is_dir) {
+    if (is_dir || is_up) {
         int tab = glyph_h / 3;
         gfx_fill_rect(gx, gy, glyph_w / 2, tab, COL_FOLDER_D);   /* tab */
         gfx_fill_rect(gx, gy + tab / 2, glyph_w, glyph_h - tab / 2, COL_FOLDER);
         gfx_rect(gx, gy + tab / 2, glyph_w, glyph_h - tab / 2, COL_FOLDER_D);
+        if (is_up) {                                            /* up-arrow */
+            int ax = gx + glyph_w / 2, ay = gy + glyph_h / 2;
+            for (int r = 0; r < 5; r++)
+                gfx_hline(ax - r, ay - 2 + r, 2 * r + 1, COL_TEXT);
+            gfx_fill_rect(ax - 1, ay + 1, 3, 5, COL_TEXT);
+        }
     } else {
         gfx_fill_rect(gx, gy, glyph_w, glyph_h, COL_PAGE);
         gfx_rect(gx, gy, glyph_w, glyph_h, COL_PAGE_LINE);
-        for (int i = 1; i <= 3; i++)                             /* text lines */
+        for (int i = 1; i <= 3; i++)                            /* text lines */
             gfx_hline(gx + 3, gy + i * (glyph_h / 4), glyph_w - 6, COL_PAGE_LINE);
     }
 
     /* label: centred under the glyph, truncated to fit the cell */
     char label[13];
-    set_str(label, e->name, sizeof(label));
+    set_str(label, name, sizeof(label));
     int maxc = (cellw - 2) / FONT_W;
     if (maxc < 1) maxc = 1;
     if ((int)strlen(label) > maxc) label[maxc] = '\0';
@@ -134,12 +179,22 @@ static void draw_icon(int idx) {
     gfx_text(ix + (cellw - tw) / 2, iy + glyph_h + 6, label, COL_LABEL, -1);
 }
 
-static int icon_at(int px, int py) {
-    for (int i = 0; i < nentries; i++) {
+static void draw_icons(void) {
+    int base = base_slot();
+    if (base)
+        draw_slot(0, "..", 0, 1);
+    for (int i = 0; i < nentries; i++)
+        draw_slot(i + base, entries[i].name, entries[i].is_dir, 0);
+}
+
+/* Map a click to a grid slot, or -1. */
+static int slot_at(int px, int py) {
+    int total = base_slot() + nentries;
+    for (int s = 0; s < total; s++) {
         int ix, iy;
-        icon_pos(i, &ix, &iy);
+        icon_pos(s, &ix, &iy);
         if (px >= ix && px < ix + cellw && py >= iy && py < iy + cellh)
-            return i;
+            return s;
     }
     return -1;
 }
@@ -274,13 +329,9 @@ static void draw_taskbar(void) {
     gfx_rect(sb_x, sb_y, sb_w, sb_h, COL_BORDER);
     gfx_text(sb_x + (big ? 12 : 6), y + pad, "Start", COL_TITLE_TEXT, -1);
 
-    /* active resolution (e.g. "1024x768x32") */
-    char mode[20]; char *p = mode;
-    p = append_uint(p, (uint32_t)W); *p++ = 'x';
-    p = append_uint(p, (uint32_t)H); *p++ = 'x';
-    p = append_uint(p, (uint32_t)vga_bpp()); *p = 0;
+    /* current directory path */
     if (big)
-        gfx_text(sb_x + sb_w + 12, y + pad, mode, COL_TASK_TEXT, -1);
+        gfx_text(sb_x + sb_w + 12, y + pad, cur_path, COL_TASK_TEXT, -1);
 
     struct rtc_time t;
     rtc_read(&t);
@@ -334,8 +385,7 @@ static void draw_cursor_fb(int mx, int my) {
 /* ---- compositor ----------------------------------------------------------- */
 static void render_scene(void) {
     gfx_clear(COL_DESKTOP);
-    for (int i = 0; i < nentries; i++)
-        draw_icon(i);
+    draw_icons();
     for (int i = 0; i < MAX_WIN; i++) {
         int idx = zorder[i];
         if (wins[idx].open)
@@ -390,15 +440,29 @@ static int handle_press(int mx, int my) {
     }
 
     /* desktop icons */
-    int ic = icon_at(mx, my);
-    if (ic >= 0) {
-        selected = ic;
-        open_info(ic);
-        raise_window(WIN_INFO);
-        return ACT_SCENE;
+    int slot = slot_at(mx, my);
+    if (slot >= 0) {
+        int base = base_slot();
+        if (base && slot == 0) {                 /* ".." -> go up */
+            wins[WIN_INFO].open = 0;
+            go_up();
+            return ACT_SCENE;
+        }
+        int ei = slot - base;
+        if (ei >= 0 && ei < nentries) {
+            if (entries[ei].is_dir) {            /* descend into the folder */
+                wins[WIN_INFO].open = 0;
+                enter_dir(ei);
+            } else {                             /* file -> info window */
+                sel_slot = slot;
+                open_info(ei);
+                raise_window(WIN_INFO);
+            }
+            return ACT_SCENE;
+        }
     }
 
-    if (selected != -1) { selected = -1; return ACT_SCENE; }
+    if (sel_slot != -1) { sel_slot = -1; return ACT_SCENE; }
     return ACT_NONE;
 }
 
@@ -432,8 +496,10 @@ void desktop_run(void) {
     big = (W >= 640);
     cur_scale = big ? 2 : 1;
 
-    nentries = fs_readdir_root(entries, MAX_ICONS);
-    selected = -1;
+    dir_depth = 1;                          /* start at the root "/" */
+    dir_stack[0] = fs_root_cluster();
+    set_str(name_stack[0], "/", 13);
+    reload_dir();
     start_open = 0;
     dragging = -1;
 
