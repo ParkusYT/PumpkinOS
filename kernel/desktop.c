@@ -538,8 +538,10 @@ void desktop_run(void) {
     draw_cursor_fb(mx, my);
     cx = mx; cy = my;
 
-    /* startup jingle plays in the background as the desktop comes up */
-    ac97_play_file("/system/STARTUP.PCM", 0);
+    /* startup jingle plays in the background as the desktop comes up - it was
+     * decoded into the DMA buffer at boot, so this just kicks off the DMA (no
+     * floppy read here, so the desktop isn't frozen while it plays) */
+    ac97_start_prepared();
 
     for (;;) {
         if (keyboard_haschar()) {

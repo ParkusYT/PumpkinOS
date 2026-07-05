@@ -19,6 +19,11 @@ uint32_t pmm_alloc_frame(void);
 /* Return a frame previously handed out by pmm_alloc_frame(). */
 void pmm_free_frame(uint32_t phys_addr);
 
+/* Permanently reserve the frames covering [phys, phys+bytes) so the allocator
+ * never hands them out - e.g. a fixed DMA buffer in high memory. Call right
+ * after pmm_init(), before anything else allocates. */
+void pmm_reserve(uint32_t phys, uint32_t bytes);
+
 /* Statistics, in frames. */
 uint32_t pmm_total_frames(void);
 uint32_t pmm_used_frames(void);

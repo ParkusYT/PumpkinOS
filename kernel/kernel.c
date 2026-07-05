@@ -41,6 +41,7 @@ void kernel_main(void) {
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     console_write("  Scanning physical memory (E820) .... ... ");
     pmm_init();
+    pmm_reserve(AC97_DMA_PHYS, AC97_DMA_BYTES);   /* fixed audio DMA buffer */
     console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
     console_write("ok");
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
@@ -174,6 +175,9 @@ void kernel_main(void) {
     if (ac97_present()) {
         console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
         console_write("ok\n");
+        /* Decode the startup jingle into the DMA buffer now (the slow floppy
+         * read), so entering the desktop can start it instantly. */
+        ac97_prepare("/system/STARTUP.PCM");
     } else {
         console_set_color(VGA_YELLOW, VGA_BLACK);
         console_write("none\n");

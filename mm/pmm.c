@@ -172,6 +172,10 @@ void pmm_free_frame(uint32_t phys_addr) {
     frame_mark_free(phys_addr >> 12);
 }
 
+void pmm_reserve(uint32_t phys, uint32_t bytes) {
+    reserve_range(phys, (uint64_t)phys + bytes);
+}
+
 uint32_t pmm_total_frames(void) { return total_frames; }
 uint32_t pmm_used_frames(void)  { return used_frames; }
 uint32_t pmm_free_frames(void)  { return total_frames - used_frames; }

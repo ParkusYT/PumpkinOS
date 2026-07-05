@@ -65,11 +65,12 @@ static uint16_t io_mixer;         /* ICH NAMBAR                                *
 static uint16_t io_bm;            /* ICH NABMBAR / VIA single base             */
 static int      present;
 
-/* DMA buffer: 8-bit mono file is read into the top quarter and expanded (x4)
- * forward into 16-bit signed stereo from the start - the write pointer never
- * catches the read pointer while the source stays within the top quarter. */
-#define AUDIO_BUF (240 * 1024)
-static uint8_t  audio_dma[AUDIO_BUF] __attribute__((aligned(4)));
+/* DMA buffer at the reserved fixed high-memory address (see ac97.h). The 8-bit
+ * mono file is read into the top quarter and expanded (x4) forward into 16-bit
+ * signed stereo from the start - the write pointer never catches the read
+ * pointer while the source stays within the top quarter. */
+#define AUDIO_BUF ((int)AC97_DMA_BYTES)
+static uint8_t *const audio_dma = (uint8_t *)AC97_DMA_PHYS;
 
 /* descriptor tables (kept in identity-mapped low memory, so addr == phys) */
 static uint32_t ich_bdl[32 * 2] __attribute__((aligned(8)));   /* 32 * {addr,len} */
@@ -214,14 +215,11 @@ void ac97_init(void) {
     codec_write(CODEC_MASTER_VOL, 0x0000);          /* 0 dB, unmuted */
     codec_write(CODEC_PCM_VOL,    0x0808);          /* PCM out, unmuted */
 
-    /* Enable variable-rate audio and set the DAC rate to match our assets.
-     * Done UNCONDITIONALLY (not gated on a codec read): the VIA read window is
-     * pipelined, so a stale read of the VRA-support bit could skip this and
-     * leave the codec at its default 48 kHz - which plays 11025 Hz data ~4x
-     * too fast (the "high-pitched" symptom). Writes don't have that lag. */
-    codec_write(CODEC_EXT_CTRL, 0x0001);            /* VRA enable (bit0) */
-    delay_ms(1);
-    codec_write(CODEC_PCM_RATE, AC97_RATE);         /* PCM front DAC = 11025 Hz */
+    /* DISABLE variable-rate audio so the codec runs at its fixed 48 kHz. VRA
+     * is unreliable on the VIA VT82C686 (it kept playing our data at 48 kHz
+     * regardless of the rate register), so instead the assets are stored at
+     * 48 kHz and we just use the native rate - no rate negotiation needed. */
+    codec_write(CODEC_EXT_CTRL, 0x0000);
 
     present = 1;
 }
@@ -306,37 +304,46 @@ static int via_done(void) {
 }
 static void via_stop(void) { outb(io_bm + VIA_SGD_CONTROL, 0x40); }
 
-int ac97_play_file(const char *path, int wait) {
+static int prep_bytes;   /* 16-bit-stereo bytes staged in audio_dma, 0 = none */
+
+int ac97_prepare(const char *path) {
+    prep_bytes = 0;
     if (!present)
         return -1;
 
+    /* Read the 8-bit mono file into the top quarter, then expand it forward to
+     * 16-bit signed stereo from the start (the reading floppy I/O is the slow
+     * part - doing it here, e.g. at boot, keeps it off the playback path). */
     int maxsrc = AUDIO_BUF / 4;
-    uint8_t *src = audio_dma + (AUDIO_BUF - maxsrc);    /* top quarter */
+    uint8_t *src = audio_dma + (AUDIO_BUF - maxsrc);
     int n = fs_read_path(path, src, (uint32_t)maxsrc);
     if (n <= 0)
         return -1;
 
-    /* 8-bit unsigned mono -> 16-bit signed stereo, expanding forward in place */
     int16_t *dst = (int16_t *)audio_dma;
     for (int i = 0; i < n; i++) {
         int16_t s = (int16_t)(((int)src[i] - 128) << 8);
         dst[2 * i] = s;
         dst[2 * i + 1] = s;
     }
-    int bytes = n * 4;
+    prep_bytes = n * 4;
+    return 0;
+}
 
-    if (variant == AC_ICH) ich_start(phys_of(audio_dma), bytes);
-    else                   via_start(phys_of(audio_dma), bytes);
+void ac97_start_prepared(void) {
+    if (!present || prep_bytes <= 0)
+        return;
+    if (variant == AC_ICH) ich_start(phys_of(audio_dma), prep_bytes);
+    else                   via_start(phys_of(audio_dma), prep_bytes);
+}
 
-    if (!wait)
-        return 0;
-
-    /* Poll until the engine halts, bounded to the clip's real duration + a
-     * small margin - so if the controller's "done" bit never trips on real
-     * hardware, we still stop about when the audio actually ends (rather than
-     * freezing far longer). */
+/* Block until playback finishes, bounded to the clip's real duration + a small
+ * margin - so if the controller's "done" bit never trips on real hardware, we
+ * still stop about when the audio actually ends rather than freezing longer. */
+static void ac97_wait_done(void) {
+    int frames = prep_bytes / 4;
     uint32_t hz = timer_hz(); if (!hz) hz = 100;
-    uint32_t ms = (uint32_t)n * 1000u / AC97_RATE + 400;     /* duration + 0.4 s */
+    uint32_t ms = (uint32_t)frames * 1000u / AC97_RATE + 400;
     uint32_t limit = ms * hz / 1000; if (!limit) limit = 1;
     uint32_t start = timer_ticks();
     while (timer_ticks() - start < limit) {
@@ -344,5 +351,13 @@ int ac97_play_file(const char *path, int wait) {
         io_wait();
     }
     if (variant == AC_ICH) ich_stop(); else via_stop();
+}
+
+int ac97_play_file(const char *path, int wait) {
+    if (ac97_prepare(path) != 0)
+        return -1;
+    ac97_start_prepared();
+    if (wait)
+        ac97_wait_done();
     return 0;
 }
