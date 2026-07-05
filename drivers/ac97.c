@@ -331,9 +331,13 @@ int ac97_play_file(const char *path, int wait) {
     if (!wait)
         return 0;
 
-    /* poll until the engine halts, with a generous timeout (duration + 1 s) */
+    /* Poll until the engine halts, bounded to the clip's real duration + a
+     * small margin - so if the controller's "done" bit never trips on real
+     * hardware, we still stop about when the audio actually ends (rather than
+     * freezing far longer). */
     uint32_t hz = timer_hz(); if (!hz) hz = 100;
-    uint32_t limit = ((uint32_t)n / AC97_RATE + 2) * hz;
+    uint32_t ms = (uint32_t)n * 1000u / AC97_RATE + 400;     /* duration + 0.4 s */
+    uint32_t limit = ms * hz / 1000; if (!limit) limit = 1;
     uint32_t start = timer_ticks();
     while (timer_ticks() - start < limit) {
         if (variant == AC_ICH ? ich_done() : via_done()) break;

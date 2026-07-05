@@ -480,7 +480,20 @@ static void do_reboot(void) {
     for (;;) __asm__ volatile("cli; hlt");
 }
 static void do_poweroff(void) {
-    ac97_play_file("/system/SHUTDOWN.PCM", 1);   /* jingle while the desktop's still up */
+    /* Show a "Shutting down..." panel over the desktop, then play the jingle
+     * (blocking) so there's visible feedback while it plays, then cut power. */
+    int bw = big ? 280 : 190, bh = big ? 64 : 50;
+    int bx = W / 2 - bw / 2, by = H / 2 - bh / 2;
+    gfx_fill_rect(bx + 4, by + 4, bw, bh, COL_SHADOW);
+    gfx_fill_rect(bx, by, bw, bh, COL_FACE);
+    gfx_rect(bx, by, bw, bh, COL_BORDER);
+    gfx_fill_rect(bx + 1, by + 1, bw - 2, TITLE_H, COL_TITLE);
+    gfx_text(bx + 6, by + 2, "PumpkinOS", COL_TITLE_TEXT, -1);
+    const char *msg = "Shutting down...";
+    gfx_text(bx + (bw - gfx_text_width(msg)) / 2, by + TITLE_H + 12, msg, COL_TEXT, -1);
+    gfx_present();
+
+    ac97_play_file("/system/SHUTDOWN.PCM", 1);
     leave_graphics();
     acpi_poweroff();                        /* returns only if it failed */
     for (;;) __asm__ volatile("cli; hlt");
