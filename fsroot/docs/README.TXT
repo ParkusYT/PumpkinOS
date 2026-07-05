@@ -25,10 +25,10 @@ The disk is organised into folders:
   /docs        this README plus ABOUT.TXT and POEM.TXT
   /desktop     a place for your own files
 
-Try these (from the root directory):
+Try these:
   ls
   cat about.txt
-  cd apps
+  cd /apps          (absolute and relative paths both work, e.g. cd ../docs)
   run HELLO.ELF
 
 To add your own files, drop them into the matching fsroot/ subdirectory (e.g.

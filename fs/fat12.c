@@ -663,42 +663,73 @@ static void path_pop(void) {
     cwd_path[0] = '/';
 }
 
-int fs_cd(const char *name) {
-    if (!mounted) return -1;
-
-    if (strcmp(name, "/") == 0) {
-        cwd_cluster = 0;
-        cwd_path[0] = '/'; cwd_path[1] = '\0';
+/* Move into a single path component ('.', '..', or a directory name). Updates
+ * cwd_cluster/cwd_path. Returns 0 on success, -1 if it isn't a directory. */
+static int cd_one(const char *comp) {
+    if (comp[0] == '\0' || strcmp(comp, ".") == 0)
         return 0;
-    }
-    if (name[0] == '\0' || strcmp(name, ".") == 0)
-        return 0;
-    if (strcmp(name, "..") == 0) {
-        if (cwd_cluster == 0) return 0;
+    if (strcmp(comp, "..") == 0) {
+        if (cwd_cluster == 0) return 0;             /* already at root */
         static const uint8_t dd[11] = {'.','.',' ',' ',' ',' ',' ',' ',' ',' ',' '};
         uint8_t ent[32];
-        if (!dir_find(cwd_cluster, dd, 0, 0, ent)) { floppy_motor_off(); return -1; }
-        cwd_cluster = (uint16_t)(ent[26] | (ent[27] << 8));
+        if (!dir_find(cwd_cluster, dd, 0, 0, ent)) return -1;
+        cwd_cluster = (uint16_t)(ent[26] | (ent[27] << 8));   /* 0 if parent is root */
         path_pop();
-        floppy_motor_off();
         return 0;
     }
 
     uint8_t name83[11];
-    to_83(name, name83);
+    to_83(comp, name83);
     uint8_t ent[32];
-    if (!dir_find(cwd_cluster, name83, 0, 0, ent)) {
-        console_write("cd: no such directory\n");
-        floppy_motor_off();
+    if (!dir_find(cwd_cluster, name83, 0, 0, ent))
         return -1;
-    }
-    if (!(ent[11] & ATTR_DIR)) {
-        console_write("cd: not a directory\n");
-        floppy_motor_off();
+    if (!(ent[11] & ATTR_DIR))
         return -1;
-    }
     cwd_cluster = (uint16_t)(ent[26] | (ent[27] << 8));
-    path_push(name);
+    path_push(comp);
+    return 0;
+}
+
+/* Change directory. Accepts multi-component paths, absolute ("/apps/sub") or
+ * relative ("apps/sub", "../docs"). On any failure the cwd is left unchanged. */
+int fs_cd(const char *path) {
+    if (!mounted) return -1;
+    if (path[0] == '\0') return 0;
+
+    /* snapshot so a bad component in the middle rolls the whole cd back */
+    uint16_t save_cluster = cwd_cluster;
+    char     save_path[sizeof(cwd_path)];
+    memcpy(save_path, cwd_path, sizeof(cwd_path));
+
+    const char *p = path;
+    if (*p == '/') {                                 /* absolute: start at root */
+        cwd_cluster = 0;
+        cwd_path[0] = '/'; cwd_path[1] = '\0';
+        while (*p == '/') p++;
+    }
+
+    while (*p) {
+        char comp[13];
+        int n = 0;
+        while (*p && *p != '/') {
+            if (n < (int)sizeof(comp) - 1) comp[n++] = *p;
+            p++;
+        }
+        comp[n] = '\0';
+        while (*p == '/') p++;                        /* skip separators */
+        if (n == 0) continue;
+
+        if (cd_one(comp) != 0) {                      /* failed -> restore */
+            cwd_cluster = save_cluster;
+            memcpy(cwd_path, save_path, sizeof(cwd_path));
+            console_write("cd: no such directory: ");
+            console_write(path);
+            console_putc('\n');
+            floppy_motor_off();
+            return -1;
+        }
+    }
+
     floppy_motor_off();
     return 0;
 }
