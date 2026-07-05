@@ -19,6 +19,7 @@
 #include "floppy.h"
 #include "ata.h"
 #include "acpi.h"
+#include "net.h"
 #include "sched.h"
 #include "fat12.h"
 #include "shell.h"
@@ -115,6 +116,26 @@ void kernel_main(void) {
     floppy_init();
     console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
     console_write("ok\n");
+
+    console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    console_write("  Detecting RTL8139 network card ..... ... ");
+    if (net_init()) {
+        const uint8_t *m = net_mac;
+        console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+        console_write("ok");
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+        console_write("  (");
+        for (int i = 0; i < 6; i++) {
+            const char *hex = "0123456789abcdef";
+            console_putc(hex[m[i] >> 4]);
+            console_putc(hex[m[i] & 0xF]);
+            if (i < 5) console_putc(':');
+        }
+        console_write(")\n");
+    } else {
+        console_set_color(VGA_YELLOW, VGA_BLACK);
+        console_write("none\n");
+    }
 
     console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
     console_write("  Detecting IDE/ATA hard disks ....... ... ");

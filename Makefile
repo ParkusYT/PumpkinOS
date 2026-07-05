@@ -30,7 +30,7 @@ GCC_INC := $(shell $(CC) -print-file-name=include)
 # to the header search path, so `#include "foo.h"` keeps working regardless of
 # which directory a file lives in, and VPATH lets the pattern rules find the
 # matching .c/.asm.
-SRC_DIRS := kernel cpu mm drivers sched lib shell user fs
+SRC_DIRS := kernel cpu mm drivers sched lib shell user fs net
 VPATH    := $(SRC_DIRS)
 INCLUDES := $(addprefix -I,$(SRC_DIRS))
 

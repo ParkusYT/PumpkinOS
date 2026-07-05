@@ -17,6 +17,10 @@
 #include "acpi.h"
 #include "elf.h"
 #include "desktop.h"
+#include "rtl8139.h"
+#include "net.h"
+#include "dhcp.h"
+#include "dns.h"
 #include "string.h"
 #include "io.h"
 
@@ -44,6 +48,7 @@ static void cmd_help(void) {
     console_write("  Files   : ls  cd <d>  pwd  cat <f>  write <f> <t>  touch <f>\n");
     console_write("            mkdir <d>  rm [-r] <f>  rmdir <d>\n");
     console_write("  System  : disks [read N]  meminfo  date  uptime  sleep <s>\n");
+    console_write("  Network : net  dhcp  dns <host>\n");
     console_write("  Programs: run <file.elf>  desktop\n");
     console_write("  Power   : reboot  poweroff  halt\n");
 }
@@ -278,6 +283,80 @@ static void cmd_write(char *args) {
     fs_create(args, buf, n);
 }
 
+/* ---- networking ----------------------------------------------------------- */
+static void print_ip(uint32_t ip) {
+    console_write_dec((ip >> 24) & 0xFF); console_putc('.');
+    console_write_dec((ip >> 16) & 0xFF); console_putc('.');
+    console_write_dec((ip >> 8) & 0xFF);  console_putc('.');
+    console_write_dec(ip & 0xFF);
+}
+
+static void print_mac(void) {
+    const char *hex = "0123456789abcdef";
+    for (int i = 0; i < 6; i++) {
+        console_putc(hex[net_mac[i] >> 4]);
+        console_putc(hex[net_mac[i] & 0xF]);
+        if (i < 5) console_putc(':');
+    }
+}
+
+static void cmd_net(void) {
+    if (!rtl8139_present()) {
+        console_write("no network card detected\n");
+        return;
+    }
+    console_write("  MAC     : "); print_mac(); console_putc('\n');
+    console_write("  status  : ");
+    if (!net_up) { console_write("down  (run 'dhcp')\n"); return; }
+    console_write("up\n");
+    console_write("  IP      : "); print_ip(net_ip);      console_putc('\n');
+    console_write("  netmask : "); print_ip(net_mask);    console_putc('\n');
+    console_write("  gateway : "); print_ip(net_gateway); console_putc('\n');
+    console_write("  DNS     : "); print_ip(net_dns);     console_putc('\n');
+}
+
+static void cmd_dhcp(void) {
+    if (!rtl8139_present()) {
+        console_write("no network card detected\n");
+        return;
+    }
+    console_write("Requesting a DHCP lease...\n");
+    if (dhcp_configure()) {
+        console_set_color(VGA_LIGHT_GREEN, VGA_BLACK);
+        console_write("lease acquired\n");
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+        console_write("  IP      : "); print_ip(net_ip);      console_putc('\n');
+        console_write("  gateway : "); print_ip(net_gateway); console_putc('\n');
+        console_write("  DNS     : "); print_ip(net_dns);     console_putc('\n');
+    } else {
+        console_set_color(VGA_LIGHT_RED, VGA_BLACK);
+        console_write("DHCP failed (no response)\n");
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    }
+}
+
+static void cmd_dns(const char *args) {
+    if (args[0] == '\0') { console_write("usage: dns <hostname>\n"); return; }
+    if (!net_up) { console_write("network is down; run 'dhcp' first\n"); return; }
+
+    console_write("Resolving ");
+    console_write(args);
+    console_write(" ...\n");
+
+    uint32_t ip;
+    if (dns_resolve(args, &ip)) {
+        console_write("  ");
+        console_write(args);
+        console_write(" -> ");
+        print_ip(ip);
+        console_putc('\n');
+    } else {
+        console_set_color(VGA_LIGHT_RED, VGA_BLACK);
+        console_write("could not resolve\n");
+        console_set_color(VGA_LIGHT_GREY, VGA_BLACK);
+    }
+}
+
 /* run <file.elf> - load an ELF program off the disk and run it in ring 3. */
 static void cmd_run(const char *args) {
     if (args[0] == '\0') { console_write("usage: run <program.elf>\n"); return; }
@@ -387,6 +466,12 @@ static void shell_execute(char *line) {
         cmd_sleep(args);
     else if (strcmp(cmd, "meminfo") == 0)
         cmd_meminfo();
+    else if (strcmp(cmd, "net") == 0 || strcmp(cmd, "ipconfig") == 0)
+        cmd_net();
+    else if (strcmp(cmd, "dhcp") == 0)
+        cmd_dhcp();
+    else if (strcmp(cmd, "dns") == 0 || strcmp(cmd, "nslookup") == 0)
+        cmd_dns(args);
     else if (strcmp(cmd, "run") == 0 || strcmp(cmd, "exec") == 0)
         cmd_run(args);
     else if (strcmp(cmd, "desktop") == 0 || strcmp(cmd, "gui") == 0)
